@@ -61,7 +61,7 @@ jobs:
         run: |
           bash -n scripts/*.sh
           cp .env.example infra/.env
-          DATABASE_PASSWORD=ci-only BACKEND_IMAGE=local/gym:ci docker compose -f infra/compose.production.yaml config --quiet
+          DATABASE_PASSWORD="$(openssl rand -hex 24)" BACKEND_IMAGE=local/gym:ci docker compose -f infra/compose.production.yaml config --quiet
           docker compose config --quiet
           docker build -t local/gym:ci .
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
