@@ -1,0 +1,9 @@
+[Unit]
+Description=ValerochkaGym PostgreSQL backup
+After=docker.service
+Requires=docker.service
+[Service]
+Type=oneshot
+EnvironmentFile=-/opt/valerochkagym/backup.env
+ExecStart=/opt/valerochkagym/backup.sh
+UMask=0077

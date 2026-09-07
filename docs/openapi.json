@@ -1,0 +1,1006 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "OpenAPI definition",
+    "version": "v0"
+  },
+  "servers": [
+    {
+      "url": "https://api.valerochkagym.tech",
+      "description": "Production"
+    },
+    {
+      "url": "http://localhost:8080",
+      "description": "Local development"
+    }
+  ],
+  "paths": {
+    "/v1/sync": {
+      "get": {
+        "tags": [
+          "data-controller"
+        ],
+        "operationId": "snapshot",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/Snapshot"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "data-controller"
+        ],
+        "operationId": "push",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PushRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/PushResult"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/me/google": {
+      "post": {
+        "tags": [
+          "auth-controller"
+        ],
+        "operationId": "link",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GoogleRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/Tokens"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/me/delete-code": {
+      "post": {
+        "tags": [
+          "auth-controller"
+        ],
+        "operationId": "deleteCode",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/logout": {
+      "post": {
+        "tags": [
+          "auth-controller"
+        ],
+        "operationId": "logout",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/v1/logout-all": {
+      "post": {
+        "tags": [
+          "auth-controller"
+        ],
+        "operationId": "logoutAll",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/v1/auth/verify": {
+      "post": {
+        "tags": [
+          "auth-controller"
+        ],
+        "operationId": "verify",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CodeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": []
+      }
+    },
+    "/v1/auth/verify/request": {
+      "post": {
+        "tags": [
+          "auth-controller"
+        ],
+        "operationId": "resend",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmailRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": []
+      }
+    },
+    "/v1/auth/register": {
+      "post": {
+        "tags": [
+          "auth-controller"
+        ],
+        "operationId": "register",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Credentials"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": []
+      }
+    },
+    "/v1/auth/refresh": {
+      "post": {
+        "tags": [
+          "auth-controller"
+        ],
+        "operationId": "refresh",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RefreshRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/Tokens"
+                }
+              }
+            }
+          }
+        },
+        "security": []
+      }
+    },
+    "/v1/auth/password/reset": {
+      "post": {
+        "tags": [
+          "auth-controller"
+        ],
+        "operationId": "reset",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResetRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": []
+      }
+    },
+    "/v1/auth/password/request": {
+      "post": {
+        "tags": [
+          "auth-controller"
+        ],
+        "operationId": "requestReset",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmailRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": []
+      }
+    },
+    "/v1/auth/login": {
+      "post": {
+        "tags": [
+          "auth-controller"
+        ],
+        "operationId": "login",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Credentials"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/Tokens"
+                }
+              }
+            }
+          }
+        },
+        "security": []
+      }
+    },
+    "/v1/auth/google": {
+      "post": {
+        "tags": [
+          "auth-controller"
+        ],
+        "operationId": "google",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GoogleRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/Tokens"
+                }
+              }
+            }
+          }
+        },
+        "security": []
+      }
+    },
+    "/v1/auth/google/nonce": {
+      "post": {
+        "tags": [
+          "auth-controller"
+        ],
+        "operationId": "nonce",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": []
+      }
+    },
+    "/v1/sync/changes": {
+      "get": {
+        "tags": [
+          "data-controller"
+        ],
+        "operationId": "changes",
+        "parameters": [
+          {
+            "name": "after",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "default": 0
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "default": 200
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChangesPage"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sessions": {
+      "get": {
+        "tags": [
+          "auth-controller"
+        ],
+        "operationId": "sessions",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/SessionInfo"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/records/{kind}": {
+      "get": {
+        "tags": [
+          "data-controller"
+        ],
+        "operationId": "list",
+        "parameters": [
+          {
+            "name": "kind",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "default": 0
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "default": 100
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Record"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/records/{kind}/{id}": {
+      "get": {
+        "tags": [
+          "data-controller"
+        ],
+        "operationId": "record",
+        "parameters": [
+          {
+            "name": "kind",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/Record"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/me": {
+      "get": {
+        "tags": [
+          "auth-controller"
+        ],
+        "operationId": "me",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "auth-controller"
+        ],
+        "operationId": "delete",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeleteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/v1/sessions/{id}": {
+      "delete": {
+        "tags": [
+          "auth-controller"
+        ],
+        "operationId": "revoke",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Change": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "baseRevision": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "deleted": {
+            "type": "boolean"
+          },
+          "payload": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/JsonNode"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "JsonNode": {
+        "type": "object",
+        "properties": {
+          "number": {
+            "type": "boolean"
+          },
+          "nodeType": {
+            "type": "string",
+            "enum": [
+              "ARRAY",
+              "BINARY",
+              "BOOLEAN",
+              "MISSING",
+              "NULL",
+              "NUMBER",
+              "OBJECT",
+              "POJO",
+              "STRING"
+            ]
+          },
+          "string": {
+            "type": "boolean"
+          },
+          "missingNode": {
+            "type": "boolean"
+          },
+          "valueNode": {
+            "type": "boolean"
+          },
+          "object": {
+            "type": "boolean"
+          },
+          "double": {
+            "type": "boolean"
+          },
+          "bigDecimal": {
+            "type": "boolean"
+          },
+          "bigInteger": {
+            "type": "boolean"
+          },
+          "textual": {
+            "type": "boolean",
+            "deprecated": true
+          },
+          "boolean": {
+            "type": "boolean"
+          },
+          "binary": {
+            "type": "boolean"
+          },
+          "container": {
+            "type": "boolean"
+          },
+          "pojo": {
+            "type": "boolean"
+          },
+          "int": {
+            "type": "boolean"
+          },
+          "long": {
+            "type": "boolean"
+          },
+          "integralNumber": {
+            "type": "boolean"
+          },
+          "floatingPointNumber": {
+            "type": "boolean"
+          },
+          "array": {
+            "type": "boolean"
+          },
+          "empty": {
+            "type": "boolean"
+          },
+          "null": {
+            "type": "boolean"
+          },
+          "float": {
+            "type": "boolean"
+          },
+          "short": {
+            "type": "boolean"
+          },
+          "embeddedValue": {
+            "type": "boolean"
+          }
+        }
+      },
+      "PushRequest": {
+        "type": "object",
+        "properties": {
+          "operationId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "changes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Change"
+            }
+          }
+        }
+      },
+      "PushResult": {
+        "type": "object",
+        "properties": {
+          "revision": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "GoogleRequest": {
+        "type": "object",
+        "properties": {
+          "idToken": {
+            "type": "string"
+          },
+          "nonce": {
+            "type": "string"
+          },
+          "deviceName": {
+            "type": "string"
+          }
+        }
+      },
+      "Tokens": {
+        "type": "object",
+        "properties": {
+          "userId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "email": {
+            "type": "string"
+          },
+          "accessToken": {
+            "type": "string"
+          },
+          "refreshToken": {
+            "type": "string"
+          },
+          "expiresIn": {
+            "type": "integer",
+            "format": "int32"
+          }
+        }
+      },
+      "CodeRequest": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string"
+          },
+          "code": {
+            "type": "string"
+          }
+        }
+      },
+      "EmailRequest": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string"
+          }
+        }
+      },
+      "Credentials": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string"
+          },
+          "password": {
+            "type": "string"
+          },
+          "deviceName": {
+            "type": "string"
+          }
+        }
+      },
+      "RefreshRequest": {
+        "type": "object",
+        "properties": {
+          "refreshToken": {
+            "type": "string"
+          }
+        }
+      },
+      "ResetRequest": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string"
+          },
+          "code": {
+            "type": "string"
+          },
+          "password": {
+            "type": "string"
+          }
+        }
+      },
+      "Record": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "deleted": {
+            "type": "boolean"
+          },
+          "payload": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/JsonNode"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "Snapshot": {
+        "type": "object",
+        "properties": {
+          "revision": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "records": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Record"
+            }
+          }
+        }
+      },
+      "ChangesPage": {
+        "type": "object",
+        "properties": {
+          "revision": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "records": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Record"
+            }
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "SessionInfo": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "deviceName": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "current": {
+            "type": "boolean"
+          }
+        }
+      },
+      "DeleteRequest": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer"
+      }
+    }
+  },
+  "security": [
+    {
+      "bearerAuth": []
+    }
+  ]
+}
