@@ -66,6 +66,9 @@ Google идентифицируется по `sub`, совпадение email �
 - Backup ежедневно, локальное хранение 14 дней; off-host копия настраивается отдельно.
 - SMTP пока не предоставлен: в production `MAIL_ENABLED=false`. Google Web client ID
   настроен; настоящий Google-вход проверяется владельцем со своим аккаунтом.
+  Почту можно подключить через secrets окружения GitHub `production`: `MAIL_FROM`,
+  `SMTP_HOST`, `SMTP_USERNAME`, `SMTP_PASSWORD` и variable `MAIL_ENABLED=true`
+  ([настройка CD](docs/operations.md#через-github-cd-рекомендуется)).
 
 [Workflow](.github/workflows/backend.yml): PR → проверки и Docker build; main → проверки →
 GHCR → deploy по digest → health-check. При неудаче возвращается предыдущий совместимый
@@ -82,8 +85,9 @@ CI/CD настроен и проверен реальным деплоем из 
 Ветка `feat/backend-integration`, рабочая копия `/private/tmp/ValerochkaGym-backend-integration`.
 Версия 1.3.18 (26), Room v15. Room и очередь сохраняют работу без интернета; точный пакет
 записывается в outbox перед HTTP, подтверждённые версии — в baseline. Токены зашифрованы
-Android Keystore и лежат в `noBackupFilesDir`. Локальная база привязана к одному аккаунту;
-для смены нужно экспортировать историю и явно очистить приложение.
+Android Keystore и лежат в `noBackupFilesDir`. В Android с исправлением смены аккаунта вход с другим email автоматически очищает
+кэш предыдущего пользователя и загружает историю выбранного аккаунта. Старые локальные
+данные без аккаунта не переносятся. Ручная очистка приложения не требуется.
 Remote sync отложен до окончания активной тренировки, чтобы сохранить ID подходов,
 используемые foreground-сервисом. Calendar и AI остаются в Android.
 

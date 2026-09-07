@@ -17,6 +17,8 @@ spring:
     password: ${SMTP_PASSWORD:}
     properties:
       mail.smtp.auth: ${SMTP_AUTH:false}
+      mail.smtp.ssl.enable: ${SMTP_SSL:false}
+      mail.smtp.ssl.checkserveridentity: true
       mail.smtp.starttls.enable: ${SMTP_TLS:false}
       mail.smtp.starttls.required: ${SMTP_TLS:false}
       mail.smtp.connectiontimeout: 5000

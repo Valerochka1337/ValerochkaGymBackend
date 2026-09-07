@@ -67,7 +67,8 @@ jobs:
       - name: Validate deployment configuration
         if: needs.changes.outputs.code == 'true'
         run: |
-          bash -n scripts/*.sh
+          for script in scripts/*.sh; do bash -n "$script"; done
+          python3 -m unittest discover -s scripts/tests -p 'test_*.py'
           cp .env.example infra/.env
           DATABASE_PASSWORD=ci-only BACKEND_IMAGE=local/gym:ci docker compose -f infra/compose.production.yaml config --quiet
           docker compose config --quiet
@@ -134,11 +135,27 @@ jobs:
           IMAGE_DIGEST: ${{ needs.publish.outputs.digest }}
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REGISTRY_USER: ${{ github.actor }}
+          MAIL_ENABLED: ${{ vars.MAIL_ENABLED }}
+          MAIL_FROM: ${{ secrets.MAIL_FROM }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          SMTP_PORT: ${{ vars.SMTP_PORT }}
+          SMTP_SECURITY: ${{ vars.SMTP_SECURITY }}
         run: |
           umask 077
+          smtp_payload=$(mktemp)
+          cleanup() {
+            if [[ -f ~/.ssh/gym-deploy ]]; then
+              ssh -i ~/.ssh/gym-deploy -o BatchMode=yes -o ConnectTimeout=10 valerochka@62.84.122.55 'rm -f /opt/valerochkagym/incoming/smtp.json' || true
+            fi
+            rm -f "$smtp_payload" ~/.ssh/gym-deploy
+          }
+          trap cleanup EXIT
+          python3 scripts/smtp-config.py export > "$smtp_payload"
           mkdir -p ~/.ssh
           printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/gym-deploy
           printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
-          trap 'rm -f ~/.ssh/gym-deploy' EXIT
-          scp -i ~/.ssh/gym-deploy -o BatchMode=yes infra/compose.production.yaml scripts/deploy.sh scripts/backup.sh scripts/verify-restore.sh scripts/admin-role.sh scripts/admin-password.sh valerochka@62.84.122.55:/opt/valerochkagym/incoming/
+          scp -i ~/.ssh/gym-deploy -o BatchMode=yes infra/compose.production.yaml scripts/deploy.sh scripts/backup.sh scripts/verify-restore.sh scripts/admin-role.sh scripts/admin-password.sh scripts/smtp-config.py valerochka@62.84.122.55:/opt/valerochkagym/incoming/
+          scp -i ~/.ssh/gym-deploy -o BatchMode=yes "$smtp_payload" valerochka@62.84.122.55:/opt/valerochkagym/incoming/smtp.json
           printf '%s' "$GHCR_TOKEN" | ssh -i ~/.ssh/gym-deploy -o BatchMode=yes valerochka@62.84.122.55 "sudo /opt/valerochkagym/install-and-deploy.sh 'ghcr.io/valerochka1337/valerochkagymbackend@$IMAGE_DIGEST' '$REGISTRY_USER'"

@@ -29,22 +29,109 @@ bootstrap не перезаписывает. Он не устанавливае�
 
 ## Почта
 
-Сейчас `MAIL_ENABLED=false`: регистрация/восстановление, требующие отправки кода,
-возвращают `503 mail_unavailable`. Google-вход от SMTP не зависит.
+При первоначальном развёртывании bootstrap задаёт `MAIL_ENABLED=false`: регистрация,
+восстановление пароля и удаление аккаунта с кодом возвращают `503 mail_unavailable`.
+Это выключатель отправки, а не проблема Android. Проверять актуальное значение нужно
+на сервере; `/health` проверяет БД, но не доставку писем.
 
-Через редактор на сервере задать в `.env`: `MAIL_ENABLED=true`, `MAIL_FROM`, `SMTP_HOST`,
-`SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_AUTH=true`, `SMTP_TLS=true`.
-Текущая конфигурация рассчитана на SMTP STARTTLS (обычно 587). Для implicit TLS/465
-нужна отдельная настройка JavaMail; не выключать TLS ради обхода ошибки.
-Затем пересоздать backend:
+### Через GitHub CD (рекомендуется)
 
-```bash
-sudo docker compose --env-file .env -f compose.production.yaml up -d --no-deps backend
-```
+В репозитории GitHub открыть **Settings → Environments → production**.
+Создать **Environment secrets** (каждое значение отдельно, без обрамляющих кавычек):
 
-Проверить регистрацию, получение кода, подтверждение email и сброс пароля реальным
-тестовым адресом владельца. Эти письма не отправлялись агентом; необходимы настройки SMTP.
-DNS-подтверждение отправителя (SPF/DKIM и прочее) выполняется по требованиям выбранного сервиса.
+| Secret | Значение |
+|---|---|
+| `MAIL_FROM` | Подтверждённый провайдером email отправителя |
+| `SMTP_HOST` | Адрес SMTP-сервера |
+| `SMTP_USERNAME` | SMTP-логин |
+| `SMTP_PASSWORD` | SMTP-пароль / пароль приложения |
+
+Там же в **Environment variables**:
+
+| Variable | Значение |
+|---|---|
+| `MAIL_ENABLED` | `true` — применять SMTP из GitHub; `false` — отключить почту |
+| `SMTP_SECURITY` | `starttls` (по умолчанию) или `ssl` |
+| `SMTP_PORT` | Необязательно: по умолчанию 587 для STARTTLS, 465 для SSL |
+
+Если `MAIL_ENABLED` не задана, CD оставляет текущие почтовые настройки сервера без изменений.
+Если она `true`, все четыре secrets обязательны: неполная конфигурация прерывает деплой
+до подключения к серверу. Режим без шифрования не поддерживается; SMTP_AUTH включается автоматически.
+
+После попадания workflow и скриптов в `main` выполнить **Actions → Backend CI/CD → Run workflow**
+для `main` или дождаться следующего деплоя кода. Изменение secret само по себе не запускает CD.
+Так же обновляется пароль SMTP: заменить secret и запустить workflow заново.
+`DEPLOY_ENABLED=true` и существующие SSH-secrets по-прежнему нужны.
+
+Secrets доступны только job `deploy` с environment `production`, не сборке Docker и не PR.
+Workflow читает их через env, проверяет и передаёт временный JSON-файл по SCP в закрытый
+`incoming/`. Серверный helper под блокировкой деплоя атомарно обновляет только почтовые
+ключи `.env` (0600), сохраняя DATABASE_PASSWORD, TOKEN_PEPPER и остальные настройки.
+Значения не исполняются как shell-код; спецсимволы пароля экранируются для Compose.
+Временные файлы удаляются после выполнения; на сервере секреты остаются в рабочем `.env`.
+Если запуск нового контейнера или health-check провалится, возвращаются прежний образ и
+прежний `.env`. Проверка `/health` не проверяет доставку письма — её нужно проверить отдельно.
+
+Новый helper работает через уже установленный `install-and-deploy.sh`; переустановка sudo-entrypoint
+не нужна. Для helper требуется Python 3 (штатно доступен на используемом Ubuntu 24.04).
+
+Справка: [GitHub Environment secrets](https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/use-secrets).
+
+### Ручная настройка на сервере
+
+1. Подключить SMTP у почтового провайдера. Получить хост, порт, логин и SMTP-пароль
+   (или пароль приложения, если этого требует провайдер). Подтвердить адрес отправителя
+   или домен `valerochkagym.tech`; добавить выданные провайдером SPF/DKIM-записи и
+   настроить DMARC по его инструкции. `MAIL_FROM` должен быть разрешённым отправителем.
+2. На сервере открыть `sudoedit /opt/valerochkagym/.env` и заполнить реальные значения:
+
+   ```dotenv
+   MAIL_ENABLED=true
+   MAIL_FROM=noreply@valerochkagym.tech
+   SMTP_HOST=smtp.your-provider.example
+   SMTP_PORT=587
+   SMTP_USERNAME=your-smtp-login
+   SMTP_PASSWORD='your-smtp-password'
+   SMTP_AUTH=true
+   SMTP_TLS=true
+   SMTP_SSL=false
+   ```
+
+   Для STARTTLS/587: `SMTP_TLS=true`, `SMTP_SSL=false`.
+   Для implicit TLS/465: `SMTP_PORT=465`, `SMTP_TLS=false`, `SMTP_SSL=true`
+   (поддержка `SMTP_SSL` добавлена в этой версии; сначала обновить образ).
+   Не включать оба режима одновременно. Остальные значения даёт провайдер.
+   Внутри контейнера `localhost` — сам backend, а не почтовый сервер на VPS.
+3. Пересоздать контейнер, чтобы он прочитал изменённое окружение. Обычный `restart`
+   не применяет изменения `.env`:
+
+   ```bash
+   cd /opt/valerochkagym
+   sudo docker compose --env-file .env -f compose.production.yaml up -d --no-deps --force-recreate backend
+   sudo docker compose --env-file .env -f compose.production.yaml logs --since=10m backend
+   ```
+
+4. Зарегистрировать свой тестовый email в приложении, дождаться письма, ввести код,
+   затем войти с паролем. Проверить повторную отправку и восстановление пароля.
+   Пароль — 12–128 символов, код — 8 цифр, срок — 10 минут. Если отправка при регистрации
+   завершается ошибкой, транзакция откатывается; регистрацию можно повторить.
+
+Если получен `503 mail_unavailable`, проверить включение отправки и настройки SMTP.
+При ошибке SMTP backend пишет только класс ошибки без адреса, кода и секретов:
+`MailAuthenticationException` указывает на авторизацию, `MailSendException` — на
+подключение или отказ при отправке. Точную причину смотреть в журнале провайдера;
+проверить доступ VPS к нужному SMTP-порту. Не включать JavaMail debug с письмами в production.
+
+Если API ответил успешно, SMTP принял письмо, но доставка ещё не гарантирована:
+проверить delivery/bounce-статус у провайдера, подтверждение отправителя, SPF/DKIM,
+папку «Спам» и ограничения тестового режима провайдера на получателей.
+
+Локальный `compose.yaml` запускает Mailpit: письма доступны на `http://localhost:8025`.
+Этот конфиг не пересылает их во внешние почтовые ящики. Не использовать локальную
+`.env.example` как готовую production-конфигурацию.
+
+Справка: [Spring Boot mail](https://docs.spring.io/spring-boot/reference/io/email.html),
+[Mailpit и пересылка](https://mailpit.axllent.org/docs/configuration/smtp-relay/).
 
 ## Backup и восстановление
 
