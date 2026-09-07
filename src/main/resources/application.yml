@@ -53,6 +53,7 @@ management:
     mail:
       enabled: false
 gym:
+  admin-origin: ${ADMIN_ORIGIN:https://api.valerochkagym.tech}
   google-client-id: ${GOOGLE_CLIENT_ID:}
   mail-from: ${MAIL_FROM:noreply@valerochkagym.tech}
   mail-enabled: ${MAIL_ENABLED:false}

@@ -87,7 +87,7 @@ class BackendIntegrationTest {
         ),
       )
       assertEquals(
-        "2",
+        "3",
         command(
           "psql",
           "-U",
@@ -119,6 +119,7 @@ class BackendIntegrationTest {
       r.add("spring.datasource.username", postgres::getUsername)
       r.add("spring.datasource.password", postgres::getPassword)
       r.add("gym.token-pepper") { "test-pepper-with-at-least-thirty-two-bytes" }
+      r.add("gym.admin-origin") { "https://admin.test" }
       r.add("gym.google-client-id") { "test-google-client" }
     }
   }
@@ -156,11 +157,12 @@ class BackendIntegrationTest {
     issuer: String = "https://accounts.google.com",
     expired: Boolean = false,
     wrongKey: Boolean = false,
+    subject: String = "google-subject",
   ): Map<String, String> {
     val nonce = call("POST", "/auth/google/nonce").body!!["nonce"].asString()
     val claims =
       com.nimbusds.jwt.JWTClaimsSet.Builder()
-        .subject("google-subject")
+        .subject(subject)
         .issuer(issuer)
         .audience(audience)
         .expirationTime(
@@ -266,7 +268,7 @@ class BackendIntegrationTest {
 
   @BeforeEach
   fun clean() {
-    db.execute("TRUNCATE users,rate_limits,email_challenges,google_nonces CASCADE")
+    db.execute("TRUNCATE users,rate_limits,email_challenges,google_nonces,admin_audit CASCADE")
     mail.codes.clear()
   }
 
@@ -487,8 +489,8 @@ class BackendIntegrationTest {
   }
 
   @Test
-  fun `Liquibase has applied both changesets`() {
-    assertEquals(2, db.queryForObject("SELECT count(*) FROM databasechangelog", Int::class.java))
+  fun `Liquibase has applied auth sync and admin changesets`() {
+    assertEquals(3, db.queryForObject("SELECT count(*) FROM databasechangelog", Int::class.java))
   }
 
   @Test
@@ -557,5 +559,285 @@ class BackendIntegrationTest {
     )
     assertEquals(0, db.queryForObject("SELECT count(*) FROM records", Int::class.java))
     assertEquals(401, call("GET", "/me", token = token).status)
+  }
+
+  data class BrowserSession(val cookie: String, val csrf: String, val userId: UUID)
+
+  data class AdminReply(val status: Int, val body: JsonNode?, val response: HttpResponse<String>)
+
+  private fun adminCall(
+    method: String,
+    path: String,
+    body: Any? = null,
+    browser: BrowserSession? = null,
+    origin: String? = "https://admin.test",
+    csrf: String? = browser?.csrf,
+    bearer: String? = null,
+  ): AdminReply {
+    val builder =
+      HttpRequest.newBuilder(URI("http://localhost:$port/admin$path"))
+        .header("Content-Type", "application/json")
+    if (browser != null) builder.header("Cookie", browser.cookie)
+    if (origin != null) builder.header("Origin", origin)
+    if (csrf != null) builder.header("X-CSRF-Token", csrf)
+    if (bearer != null) builder.header("Authorization", "Bearer $bearer")
+    val response =
+      client.send(
+        builder
+          .method(
+            method,
+            body?.let { HttpRequest.BodyPublishers.ofString(json.writeValueAsString(it)) }
+              ?: HttpRequest.BodyPublishers.noBody(),
+          )
+          .build(),
+        HttpResponse.BodyHandlers.ofString(),
+      )
+    return AdminReply(
+      response.statusCode(),
+      response.body().takeIf { it.startsWith("{") || it.startsWith("[") }?.let(json::readTree),
+      response,
+    )
+  }
+
+  private fun administrator(): BrowserSession {
+    val user = account()
+    db.update(
+      "UPDATE users SET is_admin=true WHERE id=?",
+      UUID.fromString(user["userId"].asString()),
+    )
+    val login =
+      adminCall(
+        "POST",
+        "/api/login",
+        mapOf("email" to user["email"].asString(), "password" to "a long unique password"),
+      )
+    assertEquals(200, login.status, login.response.body())
+    return BrowserSession(
+      login.response.headers().firstValue("Set-Cookie").orElseThrow().substringBefore(';'),
+      login.body!!["csrfToken"].asString(),
+      UUID.fromString(user["userId"].asString()),
+    )
+  }
+
+  @Test
+  fun `admin pages are public but APIs reject ordinary bearer accounts and enforce origin`() {
+    val ordinary = account()
+    assertEquals(200, adminCall("GET", "/").status)
+    val page = adminCall("GET", "/index.html")
+    assertEquals(200, page.status)
+    assertTrue(
+      page.response
+        .headers()
+        .firstValue("Content-Security-Policy")
+        .orElseThrow()
+        .contains("frame-ancestors 'none'")
+    )
+    assertEquals(401, adminCall("GET", "/api/users").status)
+    assertEquals(
+      401,
+      adminCall("GET", "/api/users", bearer = ordinary["accessToken"].asString()).status,
+    )
+    val body =
+      mapOf("email" to ordinary["email"].asString(), "password" to "a long unique password")
+    assertEquals(403, adminCall("POST", "/api/login", body, origin = "https://evil.test").status)
+    assertEquals(403, adminCall("POST", "/api/login", body, origin = null).status)
+    assertEquals(403, adminCall("POST", "/api/login", body).status)
+    assertEquals(0, db.queryForObject("SELECT count(*) FROM admin_sessions", Int::class.java))
+  }
+
+  @Test
+  fun `admin session cookie is protected and role revocation and expiry take effect immediately`() {
+    val browser = administrator()
+    val login =
+      adminCall(
+        "POST",
+        "/api/login",
+        mapOf(
+          "email" to
+            db.queryForObject(
+              "SELECT email FROM users WHERE id=?",
+              String::class.java,
+              browser.userId,
+            ),
+          "password" to "a long unique password",
+        ),
+      )
+    val cookie = login.response.headers().firstValue("Set-Cookie").orElseThrow()
+    listOf("HttpOnly", "Secure", "SameSite=Strict", "Path=/", "Max-Age=28800").forEach {
+      assertTrue(cookie.contains(it), cookie)
+    }
+    val session = adminCall("GET", "/api/session", browser = browser)
+    assertEquals(browser.csrf, session.body!!["csrfToken"].asString())
+    assertEquals("no-store", session.response.headers().firstValue("Cache-Control").orElseThrow())
+    assertEquals(200, adminCall("GET", "/api/users", browser = browser).status)
+    db.update("UPDATE users SET is_admin=false WHERE id=?", browser.userId)
+    assertEquals(401, adminCall("GET", "/api/users", browser = browser).status)
+    db.update("UPDATE users SET is_admin=true WHERE id=?", browser.userId)
+    db.update("UPDATE admin_sessions SET expires_at=now()-interval '1 second'")
+    assertEquals(401, adminCall("GET", "/api/users", browser = browser).status)
+  }
+
+  @Test
+  fun `admin edits enter Android sync once and preserve audit on conflict`() {
+    val browser = administrator()
+    val owner = account()
+    val ownerId = owner["userId"].asString()
+    val token = owner["accessToken"].asString()
+    val id = UUID.randomUUID().toString()
+    assertEquals(200, push(token, listOf(change(id = id))).status)
+    val path = "/api/users/$ownerId/records/exercise/$id"
+    val body =
+      mapOf(
+        "operationId" to UUID.randomUUID(),
+        "baseRevision" to 1,
+        "payload" to exercise("Исправленный присед"),
+        "reason" to "Исправлено название",
+      )
+    assertEquals(403, adminCall("PUT", path, body, browser, csrf = null).status)
+    assertEquals(403, adminCall("PUT", path, body, browser, csrf = "forged").status)
+    assertEquals(403, adminCall("PUT", path, body, browser, origin = "https://evil.test").status)
+    val result = adminCall("PUT", path, body, browser)
+    assertEquals(200, result.status, result.response.body())
+    assertEquals(2, result.body!!["revision"].asInt())
+    assertEquals(result.body, adminCall("PUT", path, body, browser).body)
+    assertEquals(1, db.queryForObject("SELECT count(*) FROM admin_audit", Int::class.java))
+    val snapshot = call("GET", "/sync", token = token).body!!
+    assertEquals("Исправленный присед", snapshot["records"][0]["payload"]["name"].asString())
+    assertEquals(2, snapshot["records"][0]["revision"].asInt())
+    assertEquals(
+      409,
+      push(token, listOf(change(id = id, revision = 1, payload = exercise("Телефон")))).status,
+    )
+    assertEquals(
+      409,
+      adminCall("PUT", path, body + mapOf("operationId" to UUID.randomUUID()), browser).status,
+    )
+    assertEquals(
+      409,
+      adminCall("PUT", path, body + mapOf("reason" to "Другая причина"), browser).status,
+    )
+    val audit = adminCall("GET", "/api/audit", browser = browser).body!!["items"][0]
+    val detail = adminCall("GET", "/api/audit/" + audit["id"].asLong(), browser = browser).body!!
+    assertEquals("Присед", detail["before_payload"]["name"].asString())
+    assertEquals("Исправленный присед", detail["after_payload"]["name"].asString())
+    assertEquals(1, db.queryForObject("SELECT count(*) FROM admin_audit", Int::class.java))
+    db.update("DELETE FROM users WHERE id=?", UUID.fromString(ownerId))
+    assertEquals(1, db.queryForObject("SELECT count(*) FROM admin_audit", Int::class.java))
+  }
+
+  @Test
+  fun `admin creates gyms and rejects cross owner references without partial audit`() {
+    val browser = administrator()
+    val owner = account()
+    val other = account()
+    val ownerId = owner["userId"].asString()
+    val foreign = UUID.randomUUID().toString()
+    push(other["accessToken"].asString(), listOf(change(id = foreign)))
+    val id = UUID.randomUUID().toString()
+    val gym =
+      mapOf(
+        "name" to "Новый зал",
+        "updatedAt" to 1,
+        "inventoryConfigured" to false,
+        "exerciseIds" to listOf(foreign),
+        "equipmentIds" to emptyList<String>(),
+      )
+    val path = "/api/users/$ownerId/records/gym/$id"
+    val body =
+      mapOf(
+        "operationId" to UUID.randomUUID(),
+        "baseRevision" to 0,
+        "payload" to gym,
+        "reason" to "Добавлен новый зал",
+      )
+    assertEquals(400, adminCall("PUT", path, body, browser).status)
+    assertEquals(0, db.queryForObject("SELECT count(*) FROM admin_audit", Int::class.java))
+    assertEquals(
+      0,
+      call("GET", "/sync", token = owner["accessToken"].asString()).body!!["records"].size(),
+    )
+    assertEquals(
+      200,
+      adminCall(
+          "PUT",
+          path,
+          body + mapOf("payload" to gym + mapOf("exerciseIds" to emptyList<String>())),
+          browser,
+        )
+        .status,
+    )
+    assertEquals(
+      1,
+      call("GET", "/sync", token = owner["accessToken"].asString()).body!!["records"].size(),
+    )
+    assertEquals(
+      400,
+      adminCall("PUT", "/api/users/$ownerId/records/workout/$id", body, browser).status,
+    )
+    assertEquals(400, adminCall("PUT", path, body + mapOf("reason" to " "), browser).status)
+  }
+
+  @Test
+  fun `admin pagination hides secrets and revokes user and browser sessions`() {
+    val browser = administrator()
+    val otherAdmin = administrator()
+    val ordinary = account("selected@example.com")
+    val page = adminCall("GET", "/api/users?limit=1", browser = browser).body!!
+    assertEquals(1, page["items"].size())
+    assertTrue(page["hasMore"].asBoolean())
+    val filtered = adminCall("GET", "/api/users?q=selected", browser = browser).body!!
+    assertEquals(1, filtered["items"].size())
+    val detail = adminCall("GET", "/api/users/" + ordinary["userId"].asString(), browser = browser)
+    listOf("password_hash", "access_hash", "refreshToken", "google_subject", "code_hash").forEach {
+      assertFalse(detail.response.body().contains(it))
+    }
+    assertEquals(400, adminCall("GET", "/api/users?limit=101", browser = browser).status)
+    assertEquals(400, adminCall("GET", "/api/records?kind=forged", browser = browser).status)
+    val body = mapOf("operationId" to UUID.randomUUID(), "reason" to "Запрошен выход с устройств")
+    assertEquals(
+      200,
+      adminCall(
+          "POST",
+          "/api/users/" + ordinary["userId"].asString() + "/revoke-sessions",
+          body,
+          browser,
+        )
+        .status,
+    )
+    assertEquals(401, call("GET", "/me", token = ordinary["accessToken"].asString()).status)
+    assertEquals(
+      200,
+      adminCall(
+          "POST",
+          "/api/users/" + otherAdmin.userId + "/revoke-sessions",
+          body + mapOf("operationId" to UUID.randomUUID()),
+          browser,
+        )
+        .status,
+    )
+    assertEquals(401, adminCall("GET", "/api/users", browser = otherAdmin).status)
+    assertEquals(200, adminCall("POST", "/api/logout", emptyMap<String, String>(), browser).status)
+    assertEquals(401, adminCall("GET", "/api/users", browser = browser).status)
+  }
+
+  @Test
+  fun `admin Google login requires an existing explicitly promoted identity`() {
+    val google = call("POST", "/auth/google", googleBody("admin-google@example.com")).body!!
+    db.update(
+      "UPDATE users SET is_admin=true WHERE id=?",
+      UUID.fromString(google["userId"].asString()),
+    )
+    val login = adminCall("POST", "/api/google", googleBody("admin-google@example.com"))
+    assertEquals(200, login.status, login.response.body())
+    assertTrue(login.response.headers().firstValue("Set-Cookie").isPresent)
+    assertEquals(
+      403,
+      adminCall(
+          "POST",
+          "/api/google",
+          googleBody("ordinary-google@example.com", subject = "ordinary-subject"),
+        )
+        .status,
+    )
   }
 }

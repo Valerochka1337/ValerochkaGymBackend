@@ -1,0 +1,7 @@
+{
+  "name": "valerochkagym-admin-tests",
+  "private": true,
+  "scripts": { "test": "node --test src/test/js/*.test.cjs" },
+  "engines": { "node": ">=24.0.0" },
+  "devDependencies": { "jsdom": "28.1.0" }
+}

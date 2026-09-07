@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light"><title>Админка · Valerochka Gym</title>
+  <link rel="stylesheet" href="/admin/admin.css">
+  <script src="/admin/admin.js" defer></script>
+</head>
+<body>
+<a class="skip" href="#content">К содержимому</a>
+<section id="login" class="login-wrap">
+  <div class="login-brand"><span class="brand-mark">V</span><span>VALEROCHKA GYM<br><small>Управление приложением</small></span></div>
+  <div class="login-card">
+    <p class="eyebrow">ДОСТУП АДМИНИСТРАТОРА</p><h1>Добро пожаловать</h1>
+    <p class="muted">Войди через свой аккаунт в приложении. Доступ открывается только назначенным администраторам.</p>
+    <div id="google-login"></div><p id="google-note" class="hint"></p>
+    <div class="separator">или по email</div>
+    <form id="login-form">
+      <label>Email<input id="login-email" type="email" required autocomplete="username" maxlength="254"></label>
+      <label>Пароль<input id="login-password" type="password" required autocomplete="current-password" maxlength="128"></label>
+      <button class="primary full" type="submit">Войти в админку <span aria-hidden="true">↗</span></button>
+    </form>
+    <p id="login-error" class="error" role="alert"></p>
+  </div>
+  <p class="hint">Valerochka Gym · Только для управления сервисом</p>
+</section>
+<div id="shell" class="shell" hidden>
+  <aside class="sidebar">
+    <a class="brand" href="/admin/"><span class="brand-mark">V</span><span>Valerochka Gym<small>Администрирование</small></span></a>
+    <p class="nav-caption">РАБОЧЕЕ ПРОСТРАНСТВО</p>
+    <nav aria-label="Разделы админки" id="navigation">
+      <button data-view="overview"><span aria-hidden="true">◫</span>Обзор</button>
+      <button data-view="users"><span aria-hidden="true">◎</span>Пользователи</button>
+      <button data-view="exercise"><span aria-hidden="true">↗</span>Упражнения</button>
+      <button data-view="gym"><span aria-hidden="true">▦</span>Залы</button>
+      <button data-view="routine"><span aria-hidden="true">≡</span>Программы</button>
+      <button data-view="workout"><span aria-hidden="true">◷</span>Тренировки</button>
+      <button data-view="measurement"><span aria-hidden="true">⌁</span>Замеры</button>
+      <button data-view="schedule"><span aria-hidden="true">▤</span>Расписание</button>
+      <button data-view="audit"><span aria-hidden="true">↺</span>Журнал изменений</button>
+    </nav>
+    <div class="sidebar-bottom"><span class="badge">ADMIN</span><p id="admin-email"></p><button id="logout" class="quiet">Выйти из аккаунта</button></div>
+  </aside>
+  <main id="content" tabindex="-1">
+    <header class="topbar"><span>Сервис / Админка</span><span class="pill">Управление данными</span></header>
+    <div class="page-head"><div><p class="eyebrow" id="section-caption">VALEROCHKA GYM</p><h1 id="page-title">Обзор</h1><p id="page-description" class="muted"></p></div><button id="refresh" class="secondary">↻ Обновить</button></div>
+    <div id="owner-banner" class="owner-banner" hidden><span id="owner-name"></span><button id="clear-owner" class="quiet">Все пользователи ×</button></div>
+    <div id="notice" role="status" aria-live="polite" hidden></div>
+    <section id="overview" hidden></section>
+    <section id="listing" hidden>
+      <div class="toolbar"><label class="search-label"><span class="sr-only">Поиск</span><input id="search" type="search" placeholder="Поиск по названию, email или ID" maxlength="200"></label><label id="deleted-label" class="check compact"><input type="checkbox" id="deleted">Удалённые</label><button id="create" class="primary" hidden>+ Создать</button></div>
+      <div id="table-wrap" class="table-wrap" aria-live="polite"></div>
+      <div class="pagination"><span id="page-range"></span><div><button id="prev" class="secondary">← Назад</button><button id="next" class="secondary">Далее →</button></div></div>
+    </section>
+  </main>
+</div>
+<dialog id="dialog" aria-labelledby="dialog-title">
+  <div class="dialog-head"><div><p class="eyebrow" id="dialog-caption"></p><h2 id="dialog-title"></h2></div><button id="dialog-close" class="icon-button" aria-label="Закрыть">×</button></div>
+  <div id="dialog-content"></div>
+</dialog>
+<noscript>Для работы админки включи JavaScript.</noscript>
+</body>
+</html>
