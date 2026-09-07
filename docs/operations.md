@@ -102,9 +102,20 @@ CI собирает один JAR после тестов и публикует �
    удаляется после deploy. Не требуется постоянный GHCR PAT на сервере.
 5. Проверить первый реальный workflow, его тестовые отчёты и `/health` после deploy.
 
-На текущем этапе шаги 2–3 отклонены автоматическим approval review и не выполнены:
-проверка потребовала явного согласия на постоянный SSH-доступ с sudo. Ключ не создан.
-Push ещё не выполнялся. Следовательно, нельзя считать реальный CI/CD прогон подтверждённым.
+7 сентября 2026 года после явного согласия владельца создан отдельный ED25519-ключ
+с `restrict` для существующего пользователя `valerochka`; его SSH- и sudo-доступ проверен.
+Существующие ключи и sudo-конфигурация сохранены. Secrets установлены в environment
+`production`, разрешающем только ветку `main`; `DEPLOY_ENABLED=true`. Временная локальная
+приватная копия ключа удалена. Fingerprint публичного ключа:
+`SHA256:Sr5yGY0K8X81RjbXxhwcLJB9oEN4nAyR48Sb1SVTluI`.
+
+Опубликованы [backend PR #1](https://github.com/Valerochka1337/ValerochkaGymBackend/pull/1)
+и [Android PR #37](https://github.com/Valerochka1337/ValerochkaGym/pull/37).
+Первый backend CI успешно выполнил проверки, тесты, сборку JAR и Docker-образа:
+[run 34153542540](https://github.com/Valerochka1337/ValerochkaGymBackend/actions/runs/34153542540).
+Main защищена обязательным `Backend checks`, актуальной базой и изменениями через PR.
+PR не публикует образ и не получает production-secrets. Первый полный CD-прогон
+с публикацией GHCR и обновлением сервера состоится после слияния backend PR в main.
 
 ## Наблюдение
 
