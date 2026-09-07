@@ -1,0 +1,31 @@
+package tech.valerochkagym.web
+
+import org.springframework.http.ResponseEntity
+import org.springframework.http.converter.HttpMessageNotReadableException
+import org.springframework.web.bind.MethodArgumentNotValidException
+import org.springframework.web.bind.annotation.ExceptionHandler
+import org.springframework.web.bind.annotation.RestControllerAdvice
+
+class ApiException(val status: Int, val code: String, override val message: String) :
+  RuntimeException(message)
+
+data class ApiError(val code: String, val message: String)
+
+fun bad(message: String): Nothing = throw ApiException(400, "invalid_request", message)
+
+fun unauthorized(): Nothing = throw ApiException(401, "unauthorized", "Войдите в аккаунт заново")
+
+@RestControllerAdvice
+class Errors {
+  @ExceptionHandler(ApiException::class)
+  fun api(e: ApiException) = ResponseEntity.status(e.status).body(ApiError(e.code, e.message))
+
+  @ExceptionHandler(
+    MethodArgumentNotValidException::class,
+    HttpMessageNotReadableException::class,
+    IllegalArgumentException::class,
+  )
+  fun invalid(e: Exception) =
+    ResponseEntity.badRequest()
+      .body(ApiError("invalid_request", "Проверьте формат и значения полей"))
+}

@@ -1,0 +1,12 @@
+.gradle/
+.kotlin/
+build/
+.idea/
+*.iml
+.env
+.env.*
+!.env.example
+backups/
+*.dump
+*.key
+.DS_Store
