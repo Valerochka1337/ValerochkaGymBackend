@@ -9,6 +9,7 @@ umask 077
 compose=(docker compose --env-file .env -f compose.production.yaml)
 old_image=$(sed -n 's/^BACKEND_IMAGE=//p' .env)
 docker pull "$new_image"
+if [[ -f incoming/admin-role.sh ]]; then install -m 0755 incoming/admin-role.sh admin-role.sh; fi
 if "${compose[@]}" ps --status running --services | grep -qx postgres; then ./backup.sh; fi
 set_image() {
   local value="$1"

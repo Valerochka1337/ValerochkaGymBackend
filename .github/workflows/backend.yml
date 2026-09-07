@@ -32,7 +32,7 @@ jobs:
               files = (await github.rest.repos.compareCommitsWithBasehead({...context.repo, basehead: `${before}...${context.sha}`})).data.files || [];
               if (files.length >= 300) { core.setOutput('code', 'true'); return; }
             }
-            const code = /^(src\/|gradle\/|gradlew|build\.gradle\.kts|settings\.gradle\.kts|gradle\.properties|Dockerfile|\.dockerignore|compose\.yaml|infra\/|scripts\/|\.github\/workflows\/)/;
+            const code = /^(package[.-]|src\/|gradle\/|gradlew|build\.gradle\.kts|settings\.gradle\.kts|gradle\.properties|Dockerfile|\.dockerignore|compose\.yaml|infra\/|scripts\/|\.github\/workflows\/)/;
             core.setOutput('code', String(files.some(f => code.test(f.filename) || code.test(f.previous_filename || ''))));
   verify:
     name: Backend checks
@@ -53,6 +53,14 @@ jobs:
           java-version: '21'
       - uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
         if: needs.changes.outputs.code == 'true'
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        if: needs.changes.outputs.code == 'true'
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Admin interface tests
+        if: needs.changes.outputs.code == 'true'
+        run: npm ci --ignore-scripts && npm test
       - name: Formatting, unit and PostgreSQL integration tests, application build
         if: needs.changes.outputs.code == 'true'
         run: ./gradlew --no-daemon check bootJar
@@ -132,5 +140,5 @@ jobs:
           printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/gym-deploy
           printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
           trap 'rm -f ~/.ssh/gym-deploy' EXIT
-          scp -i ~/.ssh/gym-deploy -o BatchMode=yes infra/compose.production.yaml scripts/deploy.sh scripts/backup.sh scripts/verify-restore.sh valerochka@62.84.122.55:/opt/valerochkagym/incoming/
+          scp -i ~/.ssh/gym-deploy -o BatchMode=yes infra/compose.production.yaml scripts/deploy.sh scripts/backup.sh scripts/verify-restore.sh scripts/admin-role.sh valerochka@62.84.122.55:/opt/valerochkagym/incoming/
           printf '%s' "$GHCR_TOKEN" | ssh -i ~/.ssh/gym-deploy -o BatchMode=yes valerochka@62.84.122.55 "sudo /opt/valerochkagym/install-and-deploy.sh 'ghcr.io/valerochka1337/valerochkagymbackend@$IMAGE_DIGEST' '$REGISTRY_USER'"
