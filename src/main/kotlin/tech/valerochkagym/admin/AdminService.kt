@@ -45,7 +45,14 @@ class AdminService(
       throw ApiException(403, "admin_required", "Этот аккаунт не имеет доступа к админке")
   }
 
-  fun openSession(tokens: Tokens): String {
+  fun login(username: String, password: String): Pair<String, String> =
+    tx.execute {
+      // Keep the user/credential locks until the browser session exists, including password resets.
+      val tokens = auth.loginAdmin(username, password)
+      tokens.email to openSession(tokens)
+    }
+
+  private fun openSession(tokens: Tokens): String {
     val identity = auth.authenticate(tokens.accessToken) ?: unauthorized()
     try {
       requireAdmin(identity.userId)

@@ -51,24 +51,7 @@ function clearSession() {
 }
 async function showLogin(message='') {
   $('login').hidden=false; $('login-error').textContent=message;
-  try {
-    const config=await api('/config');
-    if (!config.googleClientId) { $('google-note').textContent='Google-вход пока не настроен.'; return; }
-    if (!window.google?.accounts?.id) await new Promise((resolve,reject)=>{
-      const old=document.querySelector('script[data-google]'); if(old) old.remove();
-      const script=el('script',{src:'https://accounts.google.com/gsi/client','data-google':'true'});
-      script.onload=resolve; script.onerror=reject; document.head.append(script);
-    });
-    const nonce=(await api('/nonce','POST',{})).nonce;
-    window.google.accounts.id.initialize({client_id:config.googleClientId,nonce,auto_select:false,
-      callback:async result=>{
-        try { await entered(await api('/google','POST',{idToken:result.credential,nonce})); }
-        catch(e) { showLogin(e.message); }
-      }});
-    $('google-login').replaceChildren();
-    window.google.accounts.id.renderButton($('google-login'),{type:'standard',theme:'outline',size:'large',text:'signin_with',locale:'ru',width:Math.min(360,$('google-login').clientWidth || 300)});
-    $('google-note').textContent='';
-  } catch { $('google-note').textContent='Google-вход недоступен. Можно войти по email и паролю.'; }
+
 }
 async function entered(session) {
   csrf=session.csrfToken; $('admin-email').textContent=session.email; $('login-password').value='';
@@ -77,7 +60,7 @@ async function entered(session) {
 }
 $('login-form').addEventListener('submit',async event=>{
   event.preventDefault(); const submit=event.submitter; submit.disabled=true; $('login-error').textContent='';
-  try { await entered(await api('/login','POST',{email:$('login-email').value,password:$('login-password').value})); }
+  try { await entered(await api('/login','POST',{username:$('login-username').value,password:$('login-password').value})); }
   catch(e) { $('login-error').textContent=e.message; } finally { submit.disabled=false; }
 });
 $('logout').onclick=()=>guard(async()=>{await api('/logout','POST',{}); clearSession(); await showLogin();});

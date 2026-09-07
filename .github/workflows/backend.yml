@@ -140,5 +140,5 @@ jobs:
           printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/gym-deploy
           printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
           trap 'rm -f ~/.ssh/gym-deploy' EXIT
-          scp -i ~/.ssh/gym-deploy -o BatchMode=yes infra/compose.production.yaml scripts/deploy.sh scripts/backup.sh scripts/verify-restore.sh scripts/admin-role.sh valerochka@62.84.122.55:/opt/valerochkagym/incoming/
+          scp -i ~/.ssh/gym-deploy -o BatchMode=yes infra/compose.production.yaml scripts/deploy.sh scripts/backup.sh scripts/verify-restore.sh scripts/admin-role.sh scripts/admin-password.sh valerochka@62.84.122.55:/opt/valerochkagym/incoming/
           printf '%s' "$GHCR_TOKEN" | ssh -i ~/.ssh/gym-deploy -o BatchMode=yes valerochka@62.84.122.55 "sudo /opt/valerochkagym/install-and-deploy.sh 'ghcr.io/valerochka1337/valerochkagymbackend@$IMAGE_DIGEST' '$REGISTRY_USER'"

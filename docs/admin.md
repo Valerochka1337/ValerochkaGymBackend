@@ -38,14 +38,23 @@ CD устанавливает скрипт из scripts/admin-role.sh в /opt/va
 
 ## Вход и защита
 
-Вход через Google или email/password того же аккаунта. Админка не регистрирует новые
-email-аккаунты и не выдаёт роли автоматически. Google-токен проверяется существующим
-валидатором подписи, issuer, audience, verified email и одноразового nonce.
+Вход по отдельному логину и паролю администратора (в production — логин `admin`).
+Учётные данные находятся в `admin_credentials`: уникальный логин, UUID владельца и
+солёный хэш Argon2id (memory 19456 KiB, iterations 2, parallelism 1, salt 16 bytes, hash 32 bytes).
+Пароль Android-аккаунта и Google-привязка не меняются. SMTP и Google Cloud для входа
+в админку не нужны. Самостоятельной регистрации в админке нет.
 
-Для Google Web-входа добавьте https://api.valerochkagym.tech в **Authorized JavaScript origins**
-текущего Web OAuth client в Google Cloud Console. Client ID остаётся GOOGLE_CLIENT_ID.
-Для локальной проверки добавляется отдельный localhost origin с портом.
-[Требования Google](https://developers.google.com/identity/gsi/web/guides/get-google-api-clientid).
+После назначения роли оператор задаёт или меняет пароль, передав **готовый хэш** через stdin:
+
+    sudo /opt/valerochkagym/admin-password.sh admin owner@example.com < /secure/path/admin-password.hash
+
+Хэш следует получить локально совместимым Argon2id encoder с параметрами выше.
+Файл должен содержать одну строку с завершающим переводом строки, иметь права 0600
+и удаляться после применения. Пароли и хэши нельзя добавлять в Git, миграции или аудит.
+Скрипт не создаёт и не подтверждает пользователей, не выдаёт роли. Смена учётных данных
+атомарно закрывает браузерные сессии владельца и записывает в аудит только логин.
+CD доставляет `scripts/admin-password.sh` вместе со скриптом управления ролями.
+При установке миграции 004 старые браузерные сессии закрываются: нужен вход по паролю.
 
 Браузерная сессия живёт 8 часов. Cookie:
 
@@ -92,8 +101,8 @@ UI — статические HTML/CSS/JavaScript в src/main/resources/static/a
 
 GitHub Backend checks запускает оба набора тестов. JVM HTTP-тесты работают с настоящим
 PostgreSQL/Testcontainers и Liquibase; DOM-тесты jsdom проверяют формы и обращения к API,
-но не заменяют визуальную проверку настоящего браузера. Google-вход на реальном аккаунте
-требует OAuth origin и назначения роли.
+но не заменяют визуальную проверку настоящего браузера. Вход требует назначения роли
+и отдельных учётных данных администратора.
 
 Для локального запуска после настройки БД:
 

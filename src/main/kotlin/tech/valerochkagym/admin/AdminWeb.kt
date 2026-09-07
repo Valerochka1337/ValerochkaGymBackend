@@ -31,8 +31,9 @@ import tech.valerochkagym.web.*
 import tools.jackson.databind.ObjectMapper
 
 const val ADMIN_COOKIE = "__Host-gym-admin"
-private val publicAdminApi =
-  setOf("/admin/api/login", "/admin/api/google", "/admin/api/nonce", "/admin/api/config")
+private val publicAdminApi = setOf("/admin/api/login")
+
+data class AdminCredentials(val username: String, val password: String)
 
 fun adminCookie(request: HttpServletRequest) =
   request.cookies?.singleOrNull { it.name == ADMIN_COOKIE }?.value
@@ -50,10 +51,10 @@ class AdminFilter(
   ) {
     response.setHeader("Cache-Control", "no-store")
     response.setHeader("Referrer-Policy", "strict-origin-when-cross-origin")
-    response.setHeader("Cross-Origin-Opener-Policy", "same-origin-allow-popups")
+    response.setHeader("Cross-Origin-Opener-Policy", "same-origin")
     response.setHeader(
       "Content-Security-Policy",
-      "default-src 'none'; script-src 'self' https://accounts.google.com/gsi/client; style-src 'self' https://accounts.google.com/gsi/style; img-src 'self' data:; connect-src 'self' https://accounts.google.com/gsi/; frame-src https://accounts.google.com/gsi/; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
+      "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
     )
     try {
       var bounded = request
@@ -170,10 +171,7 @@ class AdminPageController {
 class AdminController(
   private val admin: AdminService,
   private val auth: AuthService,
-  private val google: GoogleVerifier,
-  private val nonces: GoogleIdentity,
   private val limits: RateLimiter,
-  @Value("\${gym.google-client-id}") private val googleClientId: String,
 ) {
   private fun cookie(response: HttpServletResponse, value: String, age: Duration) {
     response.addHeader(
@@ -189,26 +187,17 @@ class AdminController(
     )
   }
 
-  private fun open(tokens: Tokens, response: HttpServletResponse): Map<String, String> {
-    val token = admin.openSession(tokens)
-    cookie(response, token, Duration.ofHours(8))
-    return mapOf("email" to tokens.email, "csrfToken" to admin.csrf(token))
-  }
-
-  @GetMapping("/config") fun config() = mapOf("googleClientId" to googleClientId)
-
-  @PostMapping("/nonce") fun nonce() = mapOf("nonce" to nonces.nonce())
-
   @PostMapping("/login")
-  fun login(@RequestBody body: Credentials, response: HttpServletResponse): Map<String, String> {
-    limits.check("email:" + auth.email(body.email), 8)
-    return open(auth.login(body.email, body.password, "Админка · браузер"), response)
-  }
-
-  @PostMapping("/google")
-  fun google(@RequestBody body: GoogleRequest, response: HttpServletResponse): Map<String, String> {
-    val account = google.verify(body.idToken, body.nonce)
-    return open(auth.google(account.subject, account.email, "Админка · браузер"), response)
+  fun login(
+    @RequestBody body: AdminCredentials,
+    response: HttpServletResponse,
+  ): Map<String, String> {
+    val username = body.username.trim().lowercase()
+    if (username.length !in 1..64) unauthorized()
+    limits.check("admin-login:" + username, 8)
+    val (email, token) = admin.login(username, body.password)
+    cookie(response, token, Duration.ofHours(8))
+    return mapOf("email" to email, "csrfToken" to admin.csrf(token))
   }
 
   @GetMapping("/session")

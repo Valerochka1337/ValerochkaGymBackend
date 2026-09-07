@@ -171,6 +171,26 @@ class AuthService(
     }!!
   }
 
+  fun loginAdmin(username: String, password: String): Tokens {
+    if (username.length !in 1..64 || password.length !in 12..128)
+      throw ApiException(401, "invalid_credentials", "Неверный логин или пароль")
+    return tx.execute {
+      val user =
+        db
+          .queryForList(
+            """SELECT u.id,u.email,u.email_verified,u.is_admin,c.password_hash
+          FROM admin_credentials c JOIN users u ON u.id=c.user_id
+          WHERE c.username=? FOR UPDATE OF u,c""",
+            username,
+          )
+          .firstOrNull()
+      val matched = passwords.matches(password, user?.get("password_hash") as String? ?: dummyHash)
+      if (!matched || user == null || user["is_admin"] != true || user["email_verified"] != true)
+        throw ApiException(401, "invalid_credentials", "Неверный логин или пароль")
+      issue(user["id"] as UUID, user["email"] as String, "Админка · браузер")
+    }
+  }
+
   fun google(subject: String, rawEmail: String, device: String, link: Identity? = null): Tokens {
     val email = email(rawEmail)
     return tx.execute {

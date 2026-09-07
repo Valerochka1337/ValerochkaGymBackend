@@ -12,11 +12,9 @@
   <div class="login-brand"><span class="brand-mark">V</span><span>VALEROCHKA GYM<br><small>Управление приложением</small></span></div>
   <div class="login-card">
     <p class="eyebrow">ДОСТУП АДМИНИСТРАТОРА</p><h1>Добро пожаловать</h1>
-    <p class="muted">Войди через свой аккаунт в приложении. Доступ открывается только назначенным администраторам.</p>
-    <div id="google-login"></div><p id="google-note" class="hint"></p>
-    <div class="separator">или по email</div>
+    <p class="muted">Введи логин и пароль администратора.</p>
     <form id="login-form">
-      <label>Email<input id="login-email" type="email" required autocomplete="username" maxlength="254"></label>
+      <label>Логин<input id="login-username" type="text" required autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="64"></label>
       <label>Пароль<input id="login-password" type="password" required autocomplete="current-password" maxlength="128"></label>
       <button class="primary full" type="submit">Войти в админку <span aria-hidden="true">↗</span></button>
     </form>

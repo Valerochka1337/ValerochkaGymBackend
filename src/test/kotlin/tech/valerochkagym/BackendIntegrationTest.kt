@@ -16,6 +16,7 @@ import org.springframework.boot.test.web.server.LocalServerPort
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Primary
 import org.springframework.jdbc.core.JdbcTemplate
+import org.springframework.security.crypto.argon2.Argon2PasswordEncoder
 import org.springframework.test.context.DynamicPropertyRegistry
 import org.springframework.test.context.DynamicPropertySource
 import org.testcontainers.junit.jupiter.Container
@@ -87,7 +88,7 @@ class BackendIntegrationTest {
         ),
       )
       assertEquals(
-        "3",
+        "4",
         command(
           "psql",
           "-U",
@@ -490,7 +491,7 @@ class BackendIntegrationTest {
 
   @Test
   fun `Liquibase has applied auth sync and admin changesets`() {
-    assertEquals(3, db.queryForObject("SELECT count(*) FROM databasechangelog", Int::class.java))
+    assertEquals(4, db.queryForObject("SELECT count(*) FROM databasechangelog", Int::class.java))
   }
 
   @Test
@@ -605,11 +606,17 @@ class BackendIntegrationTest {
       "UPDATE users SET is_admin=true WHERE id=?",
       UUID.fromString(user["userId"].asString()),
     )
+    db.update(
+      "INSERT INTO admin_credentials(user_id,username,password_hash) VALUES (?,?,?)",
+      UUID.fromString(user["userId"].asString()),
+      user["userId"].asString(),
+      Argon2PasswordEncoder(16, 32, 1, 19456, 2).encode("separate admin test password"),
+    )
     val login =
       adminCall(
         "POST",
         "/api/login",
-        mapOf("email" to user["email"].asString(), "password" to "a long unique password"),
+        mapOf("username" to user["userId"].asString(), "password" to "separate admin test password"),
       )
     assertEquals(200, login.status, login.response.body())
     return BrowserSession(
@@ -638,10 +645,10 @@ class BackendIntegrationTest {
       adminCall("GET", "/api/users", bearer = ordinary["accessToken"].asString()).status,
     )
     val body =
-      mapOf("email" to ordinary["email"].asString(), "password" to "a long unique password")
+      mapOf("username" to ordinary["userId"].asString(), "password" to "a long unique password")
     assertEquals(403, adminCall("POST", "/api/login", body, origin = "https://evil.test").status)
     assertEquals(403, adminCall("POST", "/api/login", body, origin = null).status)
-    assertEquals(403, adminCall("POST", "/api/login", body).status)
+    assertEquals(401, adminCall("POST", "/api/login", body).status)
     assertEquals(0, db.queryForObject("SELECT count(*) FROM admin_sessions", Int::class.java))
   }
 
@@ -652,15 +659,7 @@ class BackendIntegrationTest {
       adminCall(
         "POST",
         "/api/login",
-        mapOf(
-          "email" to
-            db.queryForObject(
-              "SELECT email FROM users WHERE id=?",
-              String::class.java,
-              browser.userId,
-            ),
-          "password" to "a long unique password",
-        ),
+        mapOf("username" to browser.userId.toString(), "password" to "separate admin test password"),
       )
     val cookie = login.response.headers().firstValue("Set-Cookie").orElseThrow()
     listOf("HttpOnly", "Secure", "SameSite=Strict", "Path=/", "Max-Age=28800").forEach {
@@ -821,23 +820,51 @@ class BackendIntegrationTest {
   }
 
   @Test
-  fun `admin Google login requires an existing explicitly promoted identity`() {
-    val google = call("POST", "/auth/google", googleBody("admin-google@example.com")).body!!
-    db.update(
-      "UPDATE users SET is_admin=true WHERE id=?",
-      UUID.fromString(google["userId"].asString()),
-    )
-    val login = adminCall("POST", "/api/google", googleBody("admin-google@example.com"))
-    assertEquals(200, login.status, login.response.body())
-    assertTrue(login.response.headers().firstValue("Set-Cookie").isPresent)
+  fun `admin password login is separate from Android credentials and Google`() {
+    val browser = administrator()
+    val body =
+      mapOf("username" to browser.userId.toString(), "password" to "a long unique password")
+    assertEquals(401, adminCall("POST", "/api/login", body).status)
+    assertEquals(401, adminCall("POST", "/api/login", body + ("username" to "missing")).status)
+    val valid = body + ("password" to "separate admin test password")
+    assertEquals(200, adminCall("POST", "/api/login", valid).status)
+    val email =
+      db.queryForObject("SELECT email FROM users WHERE id=?", String::class.java, browser.userId)!!
     assertEquals(
-      403,
-      adminCall(
-          "POST",
-          "/api/google",
-          googleBody("ordinary-google@example.com", subject = "ordinary-subject"),
-        )
-        .status,
+      401,
+      call("POST", "/auth/login", mapOf("email" to email, "password" to valid["password"])).status,
     )
+    assertEquals(
+      200,
+      call("POST", "/auth/login", mapOf("email" to email, "password" to body["password"])).status,
+    )
+    db.update("UPDATE users SET is_admin=false WHERE id=?", browser.userId)
+    assertEquals(401, adminCall("POST", "/api/login", valid).status)
+    db.update("UPDATE users SET is_admin=true,email_verified=false WHERE id=?", browser.userId)
+    assertEquals(401, adminCall("POST", "/api/login", valid).status)
+    db.update("UPDATE users SET email_verified=true WHERE id=?", browser.userId)
+    for (path in listOf("/api/google", "/api/nonce", "/api/config")) {
+      val method = if (path.endsWith("config")) "GET" else "POST"
+      assertEquals(
+        401,
+        adminCall(method, path, if (method == "POST") emptyMap<String, String>() else null).status,
+      )
+      // Unmapped endpoints also encounter the protected Spring error dispatcher.
+      assertEquals(
+        401,
+        adminCall(method, path, if (method == "POST") emptyMap<String, String>() else null, browser)
+          .status,
+      )
+    }
+    assertEquals(200, call("POST", "/auth/google", googleBody("android-google@example.com")).status)
+    val page = adminCall("GET", "/index.html")
+    assertFalse(page.response.body().contains("google"))
+    assertFalse(
+      page.response.headers().firstValue("Content-Security-Policy").orElseThrow().contains("google")
+    )
+    val userDetail =
+      adminCall("GET", "/api/users/${browser.userId}", browser = browser).response.body()
+    assertFalse(userDetail.contains("password_hash"))
+    assertFalse(userDetail.contains("argon2"))
   }
 }

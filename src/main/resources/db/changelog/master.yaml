@@ -5,3 +5,6 @@ databaseChangeLog:
   - include:
       file: 002-admin.sql
       relativeToChangelogFile: true
+  - include:
+      file: 003-admin-credentials.sql
+      relativeToChangelogFile: true
