@@ -10,7 +10,7 @@ const record={user_id:owner,email:'athlete@example.test',kind:'exercise',id,revi
 const summary={users:1,verifiedUsers:1,activeSessions:1,records:[{kind:'exercise',count:1}],recentActions:[]};
 const tick=()=>new Promise(resolve=>setTimeout(resolve,10));
 async function until(predicate) {for(let i=0;i<100;i++){if(predicate())return;await tick();}assert.fail('Expected UI state was not reached');}
-async function setup(overrides={}) {
+async function setup(overrides={}, loggedIn=true) {
   const errors=[],requests=[];
   const virtualConsole=new VirtualConsole();virtualConsole.on('jsdomError',e=>errors.push(e));
   const dom=new JSDOM(html,{url:'https://admin.test/admin/',runScripts:'outside-only',virtualConsole,pretendToBeVisual:true});
@@ -36,8 +36,10 @@ async function setup(overrides={}) {
     return {ok:status>=200&&status<300,status,text:async()=>JSON.stringify(data)};
   };
   w.eval(script);
-  await until(()=>!w.document.getElementById('shell').hidden);
-  await until(()=>w.document.querySelectorAll('.stat').length===4);
+  if(loggedIn) {
+    await until(()=>!w.document.getElementById('shell').hidden);
+    await until(()=>w.document.querySelectorAll('.stat').length===4);
+  } else await until(()=>requests.length>0);
   const click=label=>{const found=[...w.document.querySelectorAll('button')].find(x=>x.textContent.trim()===label&&!x.hidden);assert.ok(found,'Button '+label);found.click();};
   const field=label=>{const found=[...w.document.querySelectorAll('#dialog-content label')].find(x=>x.firstChild?.textContent===label);assert.ok(found,'Field '+label);return found.querySelector('input,select,textarea');};
   async function editor() {w.document.querySelector('[data-view=exercise]').click();await until(()=>w.document.querySelector('.table-link'));click('Изменить →');await until(()=>w.document.querySelector('#dialog-content form'));}
@@ -102,4 +104,42 @@ test('gym editor keeps selected exercises when editing inventory mode',async t=>
   assert.deepEqual(write.body.payload.exerciseIds,[id]);assert.deepEqual(write.body.payload.equipmentIds,['barbell']);
   assert.equal(write.body.payload.inventoryConfigured,false);
   await until(()=>!ui.w.document.getElementById('dialog').open&&!ui.w.document.getElementById('refresh').disabled);
+});
+
+
+test('admin logs in with username and password without Google and can log out',async t=>{
+  let loggedIn=false;
+  const ui=await setup({
+    'GET /admin/api/session':()=>({status:401,data:{message:'Войди снова'}}),
+    'POST /admin/api/login':body=>{
+      if(body.password!=='browser test password')return {status:401,data:{message:'Неверные учётные данные'}};
+      loggedIn=true;return {data:{email:'owner@example.test',csrfToken:'login-csrf'}};
+    },
+    'POST /admin/api/logout':()=>{loggedIn=false;return {data:{}};},
+  },false);
+  t.after(()=>ui.dom.window.close());
+  const d=ui.w.document;
+  assert.equal(d.getElementById('login-username').type,'text');
+  d.getElementById('login-username').value='admin';
+  d.getElementById('login-password').value='wrong password';
+  ui.click('Войти в админку ↗');
+  await until(()=>d.getElementById('login-error').textContent);
+  await until(()=>!d.querySelector('#login-form button').disabled);
+  assert.equal(d.getElementById('shell').hidden,true);
+  d.getElementById('login-password').value='browser test password';
+  ui.click('Войти в админку ↗');
+  await until(()=>!d.getElementById('shell').hidden);
+  await until(()=>d.querySelectorAll('.stat').length===4);
+  assert.equal(loggedIn,true);
+  assert.deepEqual(ui.requests.filter(r=>r.path.endsWith('/login')).at(-1).body,{username:'admin',password:'browser test password'});
+  assert.equal(d.getElementById('login-password').value,'');
+  d.getElementById('logout').click();
+  await until(()=>!d.getElementById('login').hidden);
+  assert.equal(loggedIn,false);
+  assert.equal(ui.requests.find(r=>r.path.endsWith('/logout')).headers['X-CSRF-Token'],'login-csrf');
+  assert.ok(ui.requests.every(r=>!/(google|nonce|config)/.test(r.path)));
+  assert.equal(d.querySelector('script[src^="https://accounts.google.com"]'),null);
+  assert.equal(ui.w.localStorage.length,0);
+  assert.equal(ui.w.sessionStorage.length,0);
+  assert.equal(ui.errors.length,0);
 });
