@@ -1,6 +1,7 @@
 plugins {
   kotlin("jvm") version "2.4.10"
   kotlin("plugin.spring") version "2.4.10"
+  kotlin("plugin.jpa") version "2.4.10"
   id("org.springframework.boot") version "4.1.1"
   id("com.diffplug.spotless") version "8.10.2"
   jacoco
@@ -18,7 +19,7 @@ dependencies {
   implementation(platform("org.springframework.boot:spring-boot-dependencies:4.1.1"))
   implementation("org.springframework.boot:spring-boot-starter-webmvc")
   implementation("org.springframework.boot:spring-boot-starter-security")
-  implementation("org.springframework.boot:spring-boot-starter-jdbc")
+  implementation("org.springframework.boot:spring-boot-starter-data-jpa")
   implementation("org.springframework.boot:spring-boot-starter-liquibase")
   implementation("org.springframework.boot:spring-boot-starter-validation")
   implementation("org.springframework.boot:spring-boot-starter-mail")

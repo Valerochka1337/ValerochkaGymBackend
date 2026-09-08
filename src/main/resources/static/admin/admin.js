@@ -3,7 +3,9 @@ const EQUIPMENT_LABELS = {"barbell": "Штанга", "dumbbells": "Гантел�
 
 const $ = id => document.getElementById(id);
 const names = {overview:'Обзор',users:'Пользователи',exercise:'Упражнения',gym:'Залы',routine:'Программы',workout:'Тренировки',measurement:'Замеры',schedule:'Расписание',audit:'Журнал изменений'};
-const singular = {exercise:'Упражнение',gym:'Зал',routine:'Программа',workout:'Тренировка',measurement:'Замер',schedule:'Событие'};
+Object.assign(names, {'standard:exercise':'Стандартный каталог · Упражнения','standard:gym':'Стандартные залы','standard:routine':'Стандартные шаблоны','standard:equipment':'Оборудование'});
+const isStandard = () => view.startsWith('standard:');
+const singular = {exercise:'Упражнение',gym:'Зал',routine:'Программа',workout:'Тренировка',measurement:'Замер',schedule:'Событие',equipment:'Оборудование'};
 const groups = {CHEST:'Грудь',BACK:'Спина',LEGS:'Ноги',SHOULDERS:'Плечи',ARMS:'Руки',CORE:'Кор',CARDIO:'Кардио',FULL_BODY:'Всё тело'};
 const types = {STRENGTH:'Силовое',TIMED:'На время',CARDIO:'Кардио'};
 const muscles = {UPPER_CHEST:'Верх груди',LOWER_CHEST:'Низ груди',FRONT_DELTS:'Передние дельты',SIDE_DELTS:'Средние дельты',REAR_DELTS:'Задние дельты',ROTATOR_CUFF:'Ротаторная манжета',SERRATUS_ANTERIOR:'Передняя зубчатая',BICEPS:'Бицепс',TRICEPS:'Трицепс',FOREARMS:'Предплечья',ABS:'Пресс',OBLIQUES:'Косые мышцы живота',HIP_FLEXORS:'Сгибатели бедра',ADDUCTORS:'Приводящие мышцы',QUADS:'Квадрицепсы',TIBIALIS_ANTERIOR:'Передняя большеберцовая',CALVES:'Икры',HAMSTRINGS:'Задняя поверхность бедра',GLUTES:'Ягодицы',HIP_ABDUCTORS:'Отводящие мышцы',LOWER_BACK:'Поясница',LATS:'Широчайшие',UPPER_BACK:'Верх спины',TRAPS:'Трапеции',NECK:'Шея'};
@@ -72,7 +74,7 @@ $('next').onclick=()=>{if(hasMore){offset+=pageSize;guard(load);}};
 $('deleted').onchange=()=>{offset=0;guard(load);};
 let searchTimer;
 $('search').oninput=()=>{clearTimeout(searchTimer);searchTimer=setTimeout(()=>{offset=0;guard(load);},250);};
-$('create').onclick=()=>guard(async()=>{if(owner) await editRecord({user_id:owner.id,email:owner.email,kind:view,id:crypto.randomUUID(),revision:0,payload:null}); else await chooseOwner();});
+$('create').onclick=()=>guard(async()=>{if(isStandard()) return editStandard({kind:view.split(':')[1],id:view==='standard:equipment'?'':crypto.randomUUID(),revision:0,payload:null,standard:true}); if(owner) await editRecord({user_id:owner.id,email:owner.email,kind:view,id:crypto.randomUUID(),revision:0,payload:null}); else await chooseOwner();});
 function closeDialog() {
   if(dialogBusy) return;
   if(dialogDirty && !window.confirm('Закрыть без сохранения изменений?')) return;
@@ -91,17 +93,18 @@ async function navigate(next) { view=next;offset=0;$('search').value='';$('delet
 async function load() {
   const version=++requestVersion;
   $('page-title').textContent=names[view];
-  $('page-description').textContent=view==='overview' ? 'Пользователи, данные и последние действия — всё в одном месте.' : view==='audit' ? 'Кто, что и зачем изменил. История сохраняется вместе с версиями записей.' : view==='users' ? 'Аккаунты, способы входа и данные пользователей.' : 'Данные пользователей приложения. Правки появятся на устройствах при синхронизации.';
+  $('page-description').textContent=isStandard() ? 'Общие объекты доступны всем, включая офлайн. Архив сохраняет содержимое и ссылки.' : view==='overview' ? 'Пользователи, данные и последние действия — всё в одном месте.' : view==='audit' ? 'Кто, что и зачем изменил. История сохраняется вместе с версиями записей.' : view==='users' ? 'Аккаунты, способы входа и данные пользователей.' : 'Данные пользователей приложения. Правки появятся на устройствах при синхронизации.';
   for(const nav of $('navigation').querySelectorAll('button')) { if(nav.dataset.view===view) nav.setAttribute('aria-current','page'); else nav.removeAttribute('aria-current'); }
   $('overview').hidden=view!=='overview'; $('listing').hidden=view==='overview';
-  $('owner-banner').hidden=!owner || ['users','overview'].includes(view);
+  $('owner-banner').hidden=isStandard() || !owner || ['users','overview'].includes(view);
   $('owner-name').textContent=owner ? 'Данные: ' + owner.email : '';
-  $('create').hidden=!['gym','exercise'].includes(view);
+  $('create').hidden=!isStandard() && !['gym','exercise'].includes(view);
   $('deleted-label').hidden=['overview','users','audit'].includes(view);
   $('search').disabled=view==='audit';
   $('search').placeholder=view==='users' ? 'Поиск по email или ID пользователя' : 'Поиск по названию, email или ID';
   $('refresh').disabled=true; $('table-wrap').setAttribute('aria-busy','true');
   try {
+    if(isStandard()) { await loadStandard(version); return; }
     if(view==='overview') { const data=await api('/summary'); if(version===requestVersion) renderOverview(data); return; }
     $('table-wrap').replaceChildren(el('p',{class:'empty'},'Загружаем данные…'));
     const params=new URLSearchParams({offset:String(offset),limit:String(pageSize)});
@@ -232,10 +235,13 @@ function picker(title,options,selected) {
   return {node:fieldset,values:()=>[...values]};
 }
 async function editRecord(record) {
-  const ticket=openDialog((record.payload?'Изменить: ':'Создать: ')+singular[record.kind].toLowerCase(),record.email);
+  const ticket=openDialog((record.payload?'Изменить: ':'Создать: ')+singular[record.kind].toLowerCase(),record.standard?'Стандартный каталог':record.email);
   $('dialog-content').textContent='Подготавливаем форму…';
   if(!catalog)catalog=await api('/catalog');
-  const exerciseOptions=record.kind==='gym'?await api('/users/'+record.user_id+'/exercise-options'):[];
+  Object.assign(EQUIPMENT_LABELS,catalog.equipmentLabels||{});
+  const shared=record.standard?await publicCatalog():null;
+  if(shared) {catalog={equipment:shared.equipment.filter(x=>!x.archived || record.payload?.equipmentIds?.includes(x.id)).map(x=>x.id),muscles:Object.keys(muscles)};for(const e of shared.equipment)EQUIPMENT_LABELS[e.id]=e.payload.name;}
+  const exerciseOptions=record.kind==='gym'?(shared?shared.records.filter(x=>x.kind==='exercise' && (!x.archived || record.payload?.exerciseIds?.includes(x.id))).map(x=>({id:x.id,name:x.payload.name})):await api('/users/'+record.user_id+'/exercise-options')):[];
   if(ticket!==dialogVersion || !$('dialog').open)return;
   const original=record.payload || (record.kind==='gym'?{name:'',inventoryConfigured:true,exerciseIds:[],equipmentIds:[]}:{name:'',muscleGroup:'FULL_BODY',type:'STRENGTH',isCustom:true,needsMuscleMapReview:false,equipmentRequirementState:'UNKNOWN',muscles:[],equipmentIds:[]});
   const form=el('form'),fields=el('fieldset',{class:'form-section'});// All controls share a disableable fieldset.
@@ -266,8 +272,8 @@ async function editRecord(record) {
     configured.input.onchange=mode;mode();
     fields.append(grid,hint,eq.node,exercisePicker.node);
   }
-  fields.append(reason.label);form.append(el('p',{class:'hint'},'Владелец: '+record.email+' · '+(record.revision?'Версия '+record.revision:'Новая запись')),fields);
-  const error=el('p',{class:'error',role:'alert'}),reload=button('Открыть актуальную версию',async()=>{if(window.confirm('Загрузить запись с сервера? Несохранённые поля формы будут потеряны.'))await openRecord(record);},'secondary');
+  fields.append(reason.label);form.append(el('p',{class:'hint'},(record.standard?'Стандартный каталог':'Владелец: '+record.email)+' · '+(record.revision?'Версия '+record.revision:'Новая запись')),fields);
+  const error=el('p',{class:'error',role:'alert'}),reload=button('Открыть актуальную версию',async()=>{if(window.confirm('Загрузить запись с сервера? Несохранённые поля формы будут потеряны.'))await (record.standard?editStandard(await api('/standard/'+record.kind+'/'+record.id)):openRecord(record));},'secondary');
   reload.hidden=true;
   const save=el('button',{type:'submit',class:'primary'},'Сохранить изменения');
   form.append(error,reload,el('div',{class:'form-actions'},button('Отмена',closeDialog),save));
@@ -282,7 +288,7 @@ async function editRecord(record) {
     if(pending?.signature!==signature)pending={signature,body:{operationId:crypto.randomUUID(),baseRevision:record.revision,payload:{...payload,updatedAt:Date.now()},reason:reason.input.value}};
     dialogBusy=true;fields.disabled=true;save.disabled=true;$('dialog-close').disabled=true;
     try {
-      await api('/users/'+record.user_id+'/records/'+record.kind+'/'+record.id,'PUT',pending.body);
+      await api(record.standard?'/standard/'+record.kind+'/'+record.id:'/users/'+record.user_id+'/records/'+record.kind+'/'+record.id,'PUT',pending.body);
       dialogBusy=false;dialogDirty=false;closeDialog();notice('Изменения сохранены. Приложение получит их при следующей синхронизации.');await load();
     } catch(e) {error.textContent=e.message;if(e.status===409)reload.hidden=false;}
     finally {dialogBusy=false;fields.disabled=false;save.disabled=false;$('dialog-close').disabled=false;}
@@ -297,3 +303,86 @@ async function showAudit(id) {
   for(const [key,label] of [['before_payload','До изменения'],['after_payload','После изменения']])$('dialog-content').append(el('h3',{},label),el('pre',{class:'json'},entry[key]?JSON.stringify(entry[key],null,2):'Нет содержимого'));
 }
 (async()=>{try {await entered(await api('/session'));}catch {await showLogin();}})();
+
+async function publicCatalog() {
+  const response=await fetch('/v1/catalog',{cache:'no-cache'});
+  if(!response.ok)throw new Error('Не удалось загрузить стандартный каталог');
+  return JSON.parse(await response.text());
+}
+async function loadStandard(version) {
+  const kind=view.split(':')[1];
+  const params=new URLSearchParams({kind,q:$('search').value,archived:String($('deleted').checked),offset:String(offset),limit:String(pageSize)});
+  const data=await api('/standard?'+params);
+  if(version!==requestVersion)return;
+  hasMore=data.hasMore;
+  $('table-wrap').replaceChildren(table(['Название','Состояние','Версия','Действия'],data.items.map(r=>[
+    r.payload.name,r.archived?'Архив':'Активно',String(r.revision),el('div',{},button('Изменить',()=>editStandard(r)),button(r.archived?'Вернуть из архива':'В архив',()=>archiveStandard(r)))
+  ])));
+  $('page-range').textContent=data.items.length?`${offset+1}–${offset+data.items.length}`:'Нет записей';
+  $('prev').disabled=offset===0;$('next').disabled=!hasMore;
+}
+async function archiveStandard(record) {
+  openDialog(record.archived?'Вернуть из архива':'Архивировать',record.payload.name);
+  const reason=labeled('Причина изменения','textarea','',{required:true,minlength:'3',maxlength:'500'});
+  const form=el('form',{},reason.label),error=el('p',{role:'alert',class:'error'}),save=el('button',{type:'submit',class:'primary'},'Подтвердить');
+  let pending=null;
+  form.append(error,save);
+  form.onsubmit=async event=>{
+    event.preventDefault();
+    if(!pending || pending.reason!==reason.input.value)pending={operationId:crypto.randomUUID(),baseRevision:record.revision,reason:reason.input.value,archived:!record.archived};
+    dialogBusy=true;save.disabled=true;
+    try {await api(`/standard/${record.kind}/${record.id}/archive`,'POST',pending);dialogBusy=false;dialogDirty=false;closeDialog();await load();}
+    catch(e){error.textContent=e.message;}finally{dialogBusy=false;save.disabled=false;}
+  };
+  $('dialog-content').append(form);
+}
+async function editStandard(record) {
+  record={...record,standard:true};
+  if(['exercise','gym'].includes(record.kind))return editRecord(record);
+  const ticket=openDialog((record.payload?'Изменить: ':'Создать: ')+singular[record.kind],'Стандартный каталог');
+  const shared=await publicCatalog();if(ticket!==dialogVersion)return;
+  const original=record.payload||{name:'',note:'',exercises:[],gymIds:[],group:'',synonyms:[],provides:[]};
+  const form=el('form'),fields=el('fieldset',{class:'form-section'});
+  const name=labeled('Название','text',original.name,{required:true,maxlength:'200'}),reason=labeled('Причина изменения','textarea','',{required:true,minlength:'3',maxlength:'500'});
+  fields.append(name.label);
+  let read;
+  if(record.kind==='equipment') {
+    const id=labeled('Постоянный ID','text',record.id,{required:true,pattern:'[a-z][a-z0-9_]{0,99}'});id.input.disabled=!!record.payload;
+    const group=labeled('Группа','text',original.group,{required:true,maxlength:'200'}),synonyms=labeled('Синонимы, через запятую','text',original.synonyms.join(', '));
+    const provides=picker('Предоставляет оборудование',shared.equipment.map(x=>({id:x.id,name:x.payload.name})),original.provides);
+    fields.append(id.label,group.label,synonyms.label,provides.node);
+    read=()=>({id:id.input.value,payload:{name:name.input.value.trim(),group:group.input.value.trim(),synonyms:[...new Set(synonyms.input.value.split(',').map(x=>x.trim()).filter(Boolean))],provides:[...new Set([id.input.value,...provides.values()])]}});
+  } else {
+    const note=labeled('Заметка','textarea',original.note,{maxlength:'10000'}),gyms=picker('Залы',shared.records.filter(x=>x.kind==='gym' && (!x.archived || original.gymIds.includes(x.id))).map(x=>({id:x.id,name:x.payload.name})),original.gymIds);
+    const rows=el('div'),entries=[];
+    const options=Object.fromEntries(shared.records.filter(x=>x.kind==='exercise' && (!x.archived || original.exercises.some(e=>e.exerciseId===x.id))).map(x=>[x.id,x.payload.name]));
+    function addExercise(value={}) {
+      const box=el('fieldset',{class:'form-section'}),exercise=selectField('Упражнение',options,value.exerciseId||Object.keys(options)[0]),rest=labeled('Отдых, секунды','number',value.restSeconds??'',{min:'0',max:'86400'}),sets=el('div'),setEntries=[];
+      const entry={box,exercise,rest,setEntries};entries.push(entry);
+      function addSet(value={}) {
+        const row=el('div',{class:'form-grid'}),inputs={};
+        for(const [key,label] of Object.entries({weightKg:'Вес, кг',reps:'Повторы',durationSec:'Время, сек',speedKmh:'Скорость, км/ч',inclinePct:'Наклон, %'})){
+          const field=labeled(label,'number',value[key]??'',{min:key==='inclinePct'?'-100':'0',step:['reps','durationSec'].includes(key)?'1':'any'});inputs[key]=field.input;row.append(field.label);
+        }
+        const item={row,inputs};setEntries.push(item);
+        row.append(button('Удалить подход',()=>{setEntries.splice(setEntries.indexOf(item),1);row.remove();dialogDirty=true;}));sets.append(row);
+      }
+      box.append(exercise.label,rest.label,sets,button('Добавить подход',()=>{addSet();dialogDirty=true;}),button('Выше',()=>{const i=entries.indexOf(entry);if(i>0){[entries[i-1],entries[i]]=[entry,entries[i-1]];rows.replaceChildren(...entries.map(x=>x.box));dialogDirty=true;}}),button('Удалить упражнение',()=>{entries.splice(entries.indexOf(entry),1);box.remove();dialogDirty=true;}));
+      (value.plannedSets||[]).forEach(addSet);rows.append(box);
+    }
+    original.exercises.forEach(addExercise);
+    fields.append(note.label,gyms.node,rows,button('Добавить упражнение',()=>{addExercise();dialogDirty=true;}));
+    read=()=>({id:record.id,payload:{name:name.input.value.trim(),note:note.input.value,gymIds:gyms.values(),exercises:entries.map((e,position)=>({exerciseId:e.exercise.input.value,position,restSeconds:e.rest.input.value===''?null:Number(e.rest.input.value),plannedSets:e.setEntries.map(s=>Object.fromEntries(Object.entries(s.inputs).map(([k,v])=>[k,v.value===''?null:Number(v.value)])))}))}});
+  }
+  fields.append(reason.label);form.append(fields);
+  const error=el('p',{class:'error',role:'alert'}),save=el('button',{type:'submit',class:'primary'},'Сохранить изменения');let pending=null;
+  form.append(error,save);form.oninput=()=>{dialogDirty=true;};
+  form.onsubmit=async event=>{
+    event.preventDefault();const next=read(),signature=JSON.stringify([next,reason.input.value]);
+    if(pending?.signature!==signature)pending={signature,id:next.id,body:{operationId:crypto.randomUUID(),baseRevision:record.revision,reason:reason.input.value,payload:{...next.payload,...(record.kind==='routine'?{updatedAt:Date.now()}:{})}}};
+    dialogBusy=true;fields.disabled=true;save.disabled=true;
+    try{await api(`/standard/${record.kind}/${pending.id}`,'PUT',pending.body);dialogBusy=false;dialogDirty=false;closeDialog();await load();}
+    catch(e){error.textContent=e.message;}finally{dialogBusy=false;fields.disabled=false;save.disabled=false;}
+  };
+  $('dialog-content').append(form);name.input.focus();
+}
