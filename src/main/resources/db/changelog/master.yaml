@@ -8,3 +8,9 @@ databaseChangeLog:
   - include:
       file: 003-admin-credentials.sql
       relativeToChangelogFile: true
+  - include:
+      file: 004-standard-catalog.sql
+      relativeToChangelogFile: true
+  - include:
+      file: 005-equipment-seed.sql
+      relativeToChangelogFile: true

@@ -1,0 +1,584 @@
+[
+  {
+    "id": "barbell",
+    "name": "Штанга",
+    "group": "Свободные веса",
+    "synonyms": [
+      "гриф"
+    ],
+    "provides": [
+      "barbell"
+    ]
+  },
+  {
+    "id": "dumbbells",
+    "name": "Гантели",
+    "group": "Свободные веса",
+    "synonyms": [],
+    "provides": [
+      "dumbbells"
+    ]
+  },
+  {
+    "id": "kettlebell",
+    "name": "Гиря",
+    "group": "Свободные веса",
+    "synonyms": [],
+    "provides": [
+      "kettlebell"
+    ]
+  },
+  {
+    "id": "ez_bar",
+    "name": "EZ-гриф",
+    "group": "Свободные веса",
+    "synonyms": [
+      "кривой гриф"
+    ],
+    "provides": [
+      "ez_bar"
+    ]
+  },
+  {
+    "id": "plates",
+    "name": "Диски",
+    "group": "Свободные веса",
+    "synonyms": [
+      "блины"
+    ],
+    "provides": [
+      "plates"
+    ]
+  },
+  {
+    "id": "rack",
+    "name": "Стойка / силовая рама",
+    "group": "Стойки",
+    "synonyms": [
+      "рама"
+    ],
+    "provides": [
+      "rack"
+    ]
+  },
+  {
+    "id": "flat_bench",
+    "name": "Горизонтальная скамья",
+    "group": "Скамьи",
+    "synonyms": [
+      "плоская скамья"
+    ],
+    "provides": [
+      "flat_bench"
+    ]
+  },
+  {
+    "id": "incline_bench",
+    "name": "Наклонная скамья",
+    "group": "Скамьи",
+    "synonyms": [],
+    "provides": [
+      "incline_bench"
+    ]
+  },
+  {
+    "id": "adjustable_bench",
+    "name": "Регулируемая скамья",
+    "group": "Скамьи",
+    "synonyms": [
+      "настраиваемая скамья"
+    ],
+    "provides": [
+      "adjustable_bench",
+      "flat_bench",
+      "incline_bench"
+    ]
+  },
+  {
+    "id": "decline_bench",
+    "name": "Скамья с отрицательным наклоном",
+    "group": "Скамьи",
+    "synonyms": [
+      "decline"
+    ],
+    "provides": [
+      "decline_bench"
+    ]
+  },
+  {
+    "id": "upper_pulley",
+    "name": "Верхний блок",
+    "group": "Тренажёры",
+    "synonyms": [],
+    "provides": [
+      "upper_pulley"
+    ]
+  },
+  {
+    "id": "lower_pulley",
+    "name": "Нижний блок",
+    "group": "Тренажёры",
+    "synonyms": [],
+    "provides": [
+      "lower_pulley"
+    ]
+  },
+  {
+    "id": "crossover",
+    "name": "Кроссовер",
+    "group": "Тренажёры",
+    "synonyms": [],
+    "provides": [
+      "crossover"
+    ]
+  },
+  {
+    "id": "pullup_bar",
+    "name": "Турник",
+    "group": "Опоры",
+    "synonyms": [
+      "перекладина"
+    ],
+    "provides": [
+      "pullup_bar"
+    ]
+  },
+  {
+    "id": "dip_bars",
+    "name": "Брусья",
+    "group": "Опоры",
+    "synonyms": [],
+    "provides": [
+      "dip_bars"
+    ]
+  },
+  {
+    "id": "low_bar",
+    "name": "Низкая перекладина",
+    "group": "Опоры",
+    "synonyms": [
+      "австралийские подтягивания"
+    ],
+    "provides": [
+      "low_bar"
+    ]
+  },
+  {
+    "id": "rings",
+    "name": "Кольца",
+    "group": "Опоры",
+    "synonyms": [],
+    "provides": [
+      "rings"
+    ]
+  },
+  {
+    "id": "parallettes",
+    "name": "Паралетсы",
+    "group": "Опоры",
+    "synonyms": [],
+    "provides": [
+      "parallettes"
+    ]
+  },
+  {
+    "id": "captains_chair",
+    "name": "Стойка для подъёма коленей",
+    "group": "Опоры",
+    "synonyms": [
+      "капитанское кресло"
+    ],
+    "provides": [
+      "captains_chair"
+    ]
+  },
+  {
+    "id": "support",
+    "name": "Опора",
+    "group": "Опоры",
+    "synonyms": [],
+    "provides": [
+      "support"
+    ]
+  },
+  {
+    "id": "nordic_bench",
+    "name": "Скамья для нордических сгибаний",
+    "group": "Специализированное",
+    "synonyms": [
+      "нордическая скамья"
+    ],
+    "provides": [
+      "nordic_bench",
+      "ankle_anchor"
+    ]
+  },
+  {
+    "id": "ankle_anchor",
+    "name": "Фиксатор стоп",
+    "group": "Специализированное",
+    "synonyms": [
+      "анкеры"
+    ],
+    "provides": [
+      "ankle_anchor"
+    ]
+  },
+  {
+    "id": "hyperextension_bench",
+    "name": "Гиперэкстензия",
+    "group": "Специализированное",
+    "synonyms": [],
+    "provides": [
+      "hyperextension_bench"
+    ]
+  },
+  {
+    "id": "reverse_hyper",
+    "name": "Тренажёр reverse hyper",
+    "group": "Специализированное",
+    "synonyms": [],
+    "provides": [
+      "reverse_hyper"
+    ]
+  },
+  {
+    "id": "t_bar_machine",
+    "name": "T-гриф",
+    "group": "Специализированное",
+    "synonyms": [],
+    "provides": [
+      "t_bar_machine"
+    ]
+  },
+  {
+    "id": "smith_machine",
+    "name": "Машина Смита",
+    "group": "Тренажёры",
+    "synonyms": [],
+    "provides": [
+      "smith_machine"
+    ]
+  },
+  {
+    "id": "hack_squat",
+    "name": "Гакк-тренажёр",
+    "group": "Тренажёры",
+    "synonyms": [],
+    "provides": [
+      "hack_squat"
+    ]
+  },
+  {
+    "id": "leg_press",
+    "name": "Жим ногами",
+    "group": "Тренажёры",
+    "synonyms": [],
+    "provides": [
+      "leg_press"
+    ]
+  },
+  {
+    "id": "leg_extension",
+    "name": "Разгибатель ног",
+    "group": "Тренажёры",
+    "synonyms": [],
+    "provides": [
+      "leg_extension"
+    ]
+  },
+  {
+    "id": "leg_curl",
+    "name": "Сгибатель ног",
+    "group": "Тренажёры",
+    "synonyms": [],
+    "provides": [
+      "leg_curl"
+    ]
+  },
+  {
+    "id": "chest_press_machine",
+    "name": "Тренажёр для жима",
+    "group": "Тренажёры",
+    "synonyms": [],
+    "provides": [
+      "chest_press_machine"
+    ]
+  },
+  {
+    "id": "pec_deck",
+    "name": "Пек-дек",
+    "group": "Тренажёры",
+    "synonyms": [],
+    "provides": [
+      "pec_deck"
+    ]
+  },
+  {
+    "id": "shoulder_press_machine",
+    "name": "Тренажёр для жима плечами",
+    "group": "Тренажёры",
+    "synonyms": [],
+    "provides": [
+      "shoulder_press_machine"
+    ]
+  },
+  {
+    "id": "rear_delt_machine",
+    "name": "Тренажёр для задней дельты",
+    "group": "Тренажёры",
+    "synonyms": [],
+    "provides": [
+      "rear_delt_machine"
+    ]
+  },
+  {
+    "id": "row_machine",
+    "name": "Тяговый тренажёр",
+    "group": "Тренажёры",
+    "synonyms": [],
+    "provides": [
+      "row_machine"
+    ]
+  },
+  {
+    "id": "gravitron",
+    "name": "Гравитрон",
+    "group": "Тренажёры",
+    "synonyms": [],
+    "provides": [
+      "gravitron"
+    ]
+  },
+  {
+    "id": "back_extension_machine",
+    "name": "Тренажёр для разгибаний спины",
+    "group": "Тренажёры",
+    "synonyms": [],
+    "provides": [
+      "back_extension_machine"
+    ]
+  },
+  {
+    "id": "hip_thrust_machine",
+    "name": "Тренажёр для хип-траста",
+    "group": "Тренажёры",
+    "synonyms": [],
+    "provides": [
+      "hip_thrust_machine"
+    ]
+  },
+  {
+    "id": "hip_abduction_machine",
+    "name": "Тренажёр для отведения бедра",
+    "group": "Тренажёры",
+    "synonyms": [],
+    "provides": [
+      "hip_abduction_machine"
+    ]
+  },
+  {
+    "id": "hip_adduction_machine",
+    "name": "Тренажёр для приведения бедра",
+    "group": "Тренажёры",
+    "synonyms": [],
+    "provides": [
+      "hip_adduction_machine"
+    ]
+  },
+  {
+    "id": "preacher_bench",
+    "name": "Скамья Скотта",
+    "group": "Скамьи",
+    "synonyms": [],
+    "provides": [
+      "preacher_bench"
+    ]
+  },
+  {
+    "id": "trap_bar",
+    "name": "Трэп-гриф",
+    "group": "Свободные веса",
+    "synonyms": [],
+    "provides": [
+      "trap_bar"
+    ]
+  },
+  {
+    "id": "rowing_machine",
+    "name": "Гребной тренажёр",
+    "group": "Кардио",
+    "synonyms": [],
+    "provides": [
+      "rowing_machine"
+    ]
+  },
+  {
+    "id": "treadmill",
+    "name": "Беговая дорожка",
+    "group": "Кардио",
+    "synonyms": [],
+    "provides": [
+      "treadmill"
+    ]
+  },
+  {
+    "id": "exercise_bike",
+    "name": "Велотренажёр",
+    "group": "Кардио",
+    "synonyms": [],
+    "provides": [
+      "exercise_bike"
+    ]
+  },
+  {
+    "id": "elliptical",
+    "name": "Эллипс",
+    "group": "Кардио",
+    "synonyms": [
+      "орбитрек"
+    ],
+    "provides": [
+      "elliptical"
+    ]
+  },
+  {
+    "id": "stair_climber",
+    "name": "Лестничный тренажёр",
+    "group": "Кардио",
+    "synonyms": [],
+    "provides": [
+      "stair_climber"
+    ]
+  },
+  {
+    "id": "stepper",
+    "name": "Степпер",
+    "group": "Кардио",
+    "synonyms": [],
+    "provides": [
+      "stepper"
+    ]
+  },
+  {
+    "id": "air_bike",
+    "name": "Air bike",
+    "group": "Кардио",
+    "synonyms": [],
+    "provides": [
+      "air_bike"
+    ]
+  },
+  {
+    "id": "ski_erg",
+    "name": "SkiErg",
+    "group": "Кардио",
+    "synonyms": [],
+    "provides": [
+      "ski_erg"
+    ]
+  },
+  {
+    "id": "jump_rope",
+    "name": "Скакалка",
+    "group": "Кардио",
+    "synonyms": [],
+    "provides": [
+      "jump_rope"
+    ]
+  },
+  {
+    "id": "ab_wheel",
+    "name": "Колесо для пресса",
+    "group": "Аксессуары",
+    "synonyms": [],
+    "provides": [
+      "ab_wheel"
+    ]
+  },
+  {
+    "id": "shrug_machine",
+    "name": "Тренажёр для шрагов",
+    "group": "Тренажёры",
+    "synonyms": [
+      "трапеция"
+    ],
+    "provides": [
+      "shrug_machine"
+    ]
+  },
+  {
+    "id": "box",
+    "name": "Тумба",
+    "group": "Специализированное",
+    "synonyms": [],
+    "provides": [
+      "box"
+    ]
+  },
+  {
+    "id": "seated_calf_machine",
+    "name": "Тренажёр для икр сидя",
+    "group": "Тренажёры",
+    "synonyms": [],
+    "provides": [
+      "seated_calf_machine"
+    ]
+  },
+  {
+    "id": "standing_calf_machine",
+    "name": "Тренажёр для икр стоя",
+    "group": "Тренажёры",
+    "synonyms": [],
+    "provides": [
+      "standing_calf_machine"
+    ]
+  },
+  {
+    "id": "platform",
+    "name": "Платформа",
+    "group": "Специализированное",
+    "synonyms": [],
+    "provides": [
+      "platform"
+    ]
+  },
+  {
+    "id": "blocks",
+    "name": "Плинты",
+    "group": "Специализированное",
+    "synonyms": [],
+    "provides": [
+      "blocks"
+    ]
+  },
+  {
+    "id": "board",
+    "name": "Доска для жима",
+    "group": "Специализированное",
+    "synonyms": [],
+    "provides": [
+      "board"
+    ]
+  },
+  {
+    "id": "resistance_band",
+    "name": "Резиновая лента",
+    "group": "Аксессуары",
+    "synonyms": [
+      "резинка"
+    ],
+    "provides": [
+      "resistance_band"
+    ]
+  },
+  {
+    "id": "pool",
+    "name": "Бассейн",
+    "group": "Кардио",
+    "synonyms": [],
+    "provides": [
+      "pool"
+    ]
+  }
+]

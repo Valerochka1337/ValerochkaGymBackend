@@ -22,7 +22,11 @@ import org.springframework.test.context.DynamicPropertySource
 import org.testcontainers.junit.jupiter.Container
 import org.testcontainers.junit.jupiter.Testcontainers
 import org.testcontainers.postgresql.PostgreSQLContainer
-import tech.valerochkagym.auth.*
+import tech.valerochkagym.controller.advice.ApiException
+import tech.valerochkagym.controller.model.Change
+import tech.valerochkagym.controller.model.PushRequest
+import tech.valerochkagym.service.auth.Mailer
+import tech.valerochkagym.service.catalog.CatalogMigration
 import tools.jackson.databind.JsonNode
 import tools.jackson.databind.ObjectMapper
 
@@ -32,6 +36,415 @@ import tools.jackson.databind.ObjectMapper
   classes = [Application::class, BackendIntegrationTest.Fakes::class],
 )
 class BackendIntegrationTest {
+  @Autowired lateinit var migration: tech.valerochkagym.service.catalog.CatalogMigration
+
+  @Test
+  fun `public catalog supports ETag and equipment metadata without authentication`() {
+    val request = HttpRequest.newBuilder(URI("http://localhost:$port/v1/catalog")).GET().build()
+    val first = client.send(request, HttpResponse.BodyHandlers.ofString())
+    assertEquals(200, first.statusCode())
+    val body = json.readTree(first.body())
+    assertFalse(body["active"].asBoolean())
+    assertEquals(61, body["equipment"].size())
+    val bench = body["equipment"].first { it["id"].asString() == "adjustable_bench" }
+    assertTrue(bench["payload"]["provides"].toList().any { it.asString() == "flat_bench" })
+    val cached =
+      client.send(
+        HttpRequest.newBuilder(request.uri())
+          .header("If-None-Match", first.headers().firstValue("ETag").orElseThrow())
+          .GET()
+          .build(),
+        HttpResponse.BodyHandlers.ofString(),
+      )
+    assertEquals(304, cached.statusCode())
+    assertEquals("", cached.body())
+  }
+
+  @Test
+  fun `standard edit retry conflict and archive preserve ownerless audit and references`() {
+    val browser = administrator()
+    val id = UUID.randomUUID()
+    val body =
+      mapOf(
+        "operationId" to UUID.randomUUID(),
+        "baseRevision" to 0,
+        "reason" to "Создать стандартное упражнение",
+        "payload" to exercise(),
+      )
+    val path = "/api/standard/exercise/$id"
+    val saved = adminCall("PUT", path, body, browser)
+    assertEquals(200, saved.status, saved.toString())
+    assertEquals(saved.body, adminCall("PUT", path, body, browser).body)
+    assertEquals(
+      409,
+      adminCall("PUT", path, body + mapOf("reason" to "Другая причина"), browser).status,
+    )
+    val archive =
+      mapOf(
+        "operationId" to UUID.randomUUID(),
+        "baseRevision" to 1,
+        "reason" to "Убрать из нового выбора",
+      )
+    assertEquals(200, adminCall("POST", "$path/archive", archive, browser).status)
+    val detail = adminCall("GET", path, browser = browser).body!!
+    assertTrue(detail["archived"].asBoolean())
+    assertEquals("Присед", detail["payload"]["name"].asString())
+    assertEquals(
+      0,
+      db.queryForObject(
+        "SELECT count(*) FROM admin_audit WHERE user_id IS NOT NULL",
+        Int::class.java,
+      ),
+    )
+    assertEquals(2, db.queryForObject("SELECT count(*) FROM admin_audit", Int::class.java))
+    assertEquals(
+      0,
+      adminCall("GET", "/api/standard?kind=exercise", browser = browser).body!!["items"].size(),
+    )
+    assertEquals(
+      1,
+      adminCall("GET", "/api/standard?kind=exercise&archived=true", browser = browser)
+        .body!!["items"]
+        .size(),
+    )
+  }
+
+  @Test
+  fun `migration is atomic repeatable and keeps personal history unchanged`() {
+    val browser = administrator()
+    val author = db.queryForObject("SELECT id FROM users WHERE is_admin", UUID::class.java)!!
+    val owner = account()
+    val ownerId = UUID.fromString(owner["userId"].asString())
+    val token = owner["accessToken"].asString()
+    val id = UUID.randomUUID()
+    val gymId = UUID.randomUUID()
+    val routineId = UUID.randomUUID()
+    val gym =
+      mapOf(
+        "name" to "Зал",
+        "updatedAt" to 1,
+        "inventoryConfigured" to false,
+        "exerciseIds" to listOf(id),
+        "equipmentIds" to emptyList<String>(),
+      )
+    val routine =
+      mapOf(
+        "name" to "Личная программа",
+        "note" to "",
+        "updatedAt" to 1,
+        "gymIds" to listOf(gymId),
+        "exercises" to
+          listOf(
+            mapOf(
+              "exerciseId" to id,
+              "position" to 0,
+              "restSeconds" to 60,
+              "plannedSets" to emptyList<Any>(),
+            )
+          ),
+      )
+    assertEquals(
+      200,
+      push(
+          token,
+          listOf(
+            change(id.toString(), payload = exercise()),
+            change(gymId.toString(), kind = "gym", payload = gym),
+            change(routineId.toString(), kind = "routine", payload = routine),
+          ),
+        )
+        .status,
+    )
+    val before =
+      db.queryForObject(
+        "SELECT payload::text FROM records WHERE user_id=? AND kind='routine'",
+        String::class.java,
+        ownerId,
+      )
+    assertThrows(tech.valerochkagym.controller.advice.ApiException::class.java) {
+      migration.run(false, null, null, "", false, false)
+    }
+    val check = migration.run(false, ownerId, null, "", false, false)
+    assertEquals("checked", check["status"])
+    assertEquals(0, db.queryForObject("SELECT count(*) FROM standard_records", Int::class.java))
+    assertThrows(tech.valerochkagym.controller.advice.ApiException::class.java) {
+      migration.run(true, ownerId, author, "Перенос", false, true)
+    }
+    assertEquals(
+      3,
+      db.queryForObject("SELECT count(*) FROM records WHERE user_id=?", Int::class.java, ownerId),
+    )
+    db.execute(
+      "CREATE FUNCTION fail_catalog_gym() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'test interrupted migration'; END $$"
+    )
+    db.execute(
+      "CREATE TRIGGER fail_catalog_gym BEFORE INSERT ON standard_records FOR EACH ROW WHEN (NEW.kind='gym') EXECUTE FUNCTION fail_catalog_gym()"
+    )
+    try {
+      assertThrows(Exception::class.java) {
+        migration.run(true, ownerId, author, "Перенос каталога", true, true)
+      }
+      assertEquals(0, db.queryForObject("SELECT count(*) FROM standard_records", Int::class.java))
+      assertEquals(
+        3,
+        db.queryForObject("SELECT count(*) FROM records WHERE user_id=?", Int::class.java, ownerId),
+      )
+      assertEquals(0, db.queryForObject("SELECT count(*) FROM admin_audit", Int::class.java))
+      assertEquals(
+        false,
+        db.queryForObject("SELECT active FROM catalog_state", Boolean::class.java),
+      )
+    } finally {
+      db.execute("DROP TRIGGER fail_catalog_gym ON standard_records")
+      db.execute("DROP FUNCTION fail_catalog_gym()")
+    }
+    assertEquals(
+      "applied",
+      migration.run(true, ownerId, author, "Перенос каталога", true, true)["status"],
+    )
+    assertEquals(
+      "already_active",
+      migration.run(true, ownerId, author, "Перенос каталога", true, true)["status"],
+    )
+    assertEquals(
+      before,
+      db.queryForObject(
+        "SELECT payload::text FROM records WHERE user_id=? AND kind='routine'",
+        String::class.java,
+        ownerId,
+      ),
+    )
+    assertEquals(2, db.queryForObject("SELECT count(*) FROM standard_records", Int::class.java))
+    assertEquals(426, call("GET", "/sync", token = token).status)
+    val v2 =
+      client.send(
+        HttpRequest.newBuilder(URI("http://localhost:$port/v1/sync"))
+          .header("Authorization", "Bearer $token")
+          .header("X-Gym-Sync-Version", "2")
+          .GET()
+          .build(),
+        HttpResponse.BodyHandlers.ofString(),
+      )
+    assertEquals(200, v2.statusCode())
+    assertEquals(1, json.readTree(v2.body())["records"].size())
+    val forbidden =
+      mapOf(
+        "operationId" to UUID.randomUUID(),
+        "catalogRevision" to 1,
+        "changes" to listOf(change(id.toString(), payload = exercise())),
+      )
+    val response =
+      client.send(
+        HttpRequest.newBuilder(URI("http://localhost:$port/v1/sync"))
+          .header("Authorization", "Bearer $token")
+          .header("X-Gym-Sync-Version", "2")
+          .header("Content-Type", "application/json")
+          .POST(HttpRequest.BodyPublishers.ofString(json.writeValueAsString(forbidden)))
+          .build(),
+        HttpResponse.BodyHandlers.ofString(),
+      )
+    assertEquals(403, response.statusCode())
+  }
+
+  @Autowired lateinit var syncService: tech.valerochkagym.service.data.SyncService
+
+  @Test
+  fun `equipment updates do not block unrelated private sync and private copies can reference shared objects`() {
+    val browser = administrator()
+    val user = account()
+    val owner = UUID.fromString(user["userId"].asString())
+    val id = UUID.randomUUID()
+    val body =
+      mapOf(
+        "operationId" to UUID.randomUUID(),
+        "baseRevision" to 0,
+        "reason" to "Общий каталог",
+        "payload" to exercise() + mapOf("equipmentIds" to listOf("flat_bench")),
+      )
+    assertEquals(200, adminCall("PUT", "/api/standard/exercise/$id", body, browser).status)
+    val gymId = UUID.randomUUID()
+    val routineId = UUID.randomUUID()
+    val gym =
+      json.valueToTree<JsonNode>(
+        mapOf(
+          "name" to "Личный зал",
+          "updatedAt" to 1,
+          "inventoryConfigured" to true,
+          "exerciseIds" to emptyList<String>(),
+          "equipmentIds" to listOf("adjustable_bench"),
+        )
+      )
+    val routine =
+      json.valueToTree<JsonNode>(
+        mapOf(
+          "name" to "Личный план",
+          "note" to "",
+          "updatedAt" to 1,
+          "gymIds" to listOf(gymId),
+          "exercises" to
+            listOf(
+              mapOf(
+                "exerciseId" to id,
+                "position" to 0,
+                "restSeconds" to 60,
+                "plannedSets" to emptyList<String>(),
+              )
+            ),
+        )
+      )
+    syncService.push(
+      owner,
+      PushRequest(
+        UUID.randomUUID(),
+        listOf(
+          Change("gym", gymId, 0, payload = gym),
+          Change("routine", routineId, 0, payload = routine),
+        ),
+        1,
+      ),
+    )
+    val equipment =
+      adminCall("GET", "/api/standard/equipment/adjustable_bench", browser = browser).body!!
+    val old = equipment["payload"]
+    val modified = json.readTree("[\"adjustable_bench\"]")
+    val next =
+      json.valueToTree<JsonNode>(
+        mapOf(
+          "name" to old["name"].asString(),
+          "group" to old["group"].asString(),
+          "synonyms" to old["synonyms"],
+          "provides" to modified,
+        )
+      )
+    try {
+      assertEquals(
+        200,
+        adminCall(
+            "PUT",
+            "/api/standard/equipment/adjustable_bench",
+            mapOf(
+              "operationId" to UUID.randomUUID(),
+              "baseRevision" to equipment["revision"].asLong(),
+              "reason" to "Обновление покрытия",
+              "payload" to next,
+            ),
+            browser,
+          )
+          .status,
+      )
+      val measurement = json.readTree("{\"measuredAt\":1000,\"weightKg\":80}")
+      assertEquals(
+        2,
+        syncService
+          .push(
+            owner,
+            PushRequest(
+              UUID.randomUUID(),
+              listOf(Change("measurement", UUID.randomUUID(), 0, payload = measurement)),
+              0,
+            ),
+          )
+          .revision,
+      )
+      assertThrows(tech.valerochkagym.controller.advice.ApiException::class.java) {
+        syncService.push(
+          owner,
+          PushRequest(
+            UUID.randomUUID(),
+            listOf(Change("routine", routineId, 1, payload = routine)),
+            2,
+          ),
+        )
+      }
+      val personalCopy = json.valueToTree<JsonNode>(exercise("Личная копия"))
+      assertEquals(
+        3,
+        syncService
+          .push(
+            owner,
+            PushRequest(
+              UUID.randomUUID(),
+              listOf(Change("exercise", UUID.randomUUID(), 0, payload = personalCopy)),
+              2,
+            ),
+          )
+          .revision,
+      )
+    } finally {
+      db.update(
+        "UPDATE equipment SET payload=?::jsonb,revision=? WHERE id='adjustable_bench'",
+        json.writeValueAsString(old),
+        equipment["revision"].asLong(),
+      )
+    }
+  }
+
+  @Test
+  fun `active catalog requires current revision for dependent writes but accepts unrelated measurements`() {
+    val user = account()
+    val owner = UUID.fromString(user["userId"].asString())
+    db.update("UPDATE catalog_state SET active=true,revision=7")
+    val failure =
+      assertThrows(tech.valerochkagym.controller.advice.ApiException::class.java) {
+        syncService.push(
+          owner,
+          PushRequest(
+            UUID.randomUUID(),
+            listOf(
+              Change(
+                "exercise",
+                UUID.randomUUID(),
+                0,
+                payload = json.valueToTree<JsonNode>(exercise()),
+              )
+            ),
+            6,
+          ),
+        )
+      }
+    assertEquals("catalog_stale", failure.code)
+    assertEquals(
+      1,
+      syncService
+        .push(
+          owner,
+          PushRequest(
+            UUID.randomUUID(),
+            listOf(
+              Change(
+                "measurement",
+                UUID.randomUUID(),
+                0,
+                payload = json.readTree("{\"measuredAt\":1000}"),
+              )
+            ),
+            6,
+          ),
+        )
+        .revision,
+    )
+    assertEquals(
+      2,
+      syncService
+        .push(
+          owner,
+          PushRequest(
+            UUID.randomUUID(),
+            listOf(
+              Change(
+                "exercise",
+                UUID.randomUUID(),
+                0,
+                payload = json.valueToTree<JsonNode>(exercise()),
+              )
+            ),
+            7,
+          ),
+        )
+        .revision,
+    )
+  }
+
   @Test
   fun `backup restores account records and Liquibase history into a separate database`() {
     val token = account()["accessToken"].asString()
@@ -88,7 +501,7 @@ class BackendIntegrationTest {
         ),
       )
       assertEquals(
-        "4",
+        "6",
         command(
           "psql",
           "-U",
@@ -269,7 +682,13 @@ class BackendIntegrationTest {
 
   @BeforeEach
   fun clean() {
-    db.execute("TRUNCATE users,rate_limits,email_challenges,google_nonces,admin_audit CASCADE")
+    db.execute(
+      "TRUNCATE users,rate_limits,email_challenges,google_nonces,admin_audit,standard_records CASCADE"
+    )
+    db.update(
+      "UPDATE catalog_state SET revision=0,active=false,source_user_id=NULL,activated_at=NULL"
+    )
+    db.update("UPDATE equipment SET archived=false")
     mail.codes.clear()
   }
 
@@ -491,7 +910,7 @@ class BackendIntegrationTest {
 
   @Test
   fun `Liquibase has applied auth sync and admin changesets`() {
-    assertEquals(4, db.queryForObject("SELECT count(*) FROM databasechangelog", Int::class.java))
+    assertEquals(6, db.queryForObject("SELECT count(*) FROM databasechangelog", Int::class.java))
   }
 
   @Test

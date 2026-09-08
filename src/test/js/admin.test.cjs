@@ -143,3 +143,26 @@ test('admin logs in with username and password without Google and can log out',a
   assert.equal(ui.w.sessionStorage.length,0);
   assert.equal(ui.errors.length,0);
 });
+
+test('standard equipment editor needs no owner and preserves exact retry payload',async t=>{
+  const equipment={kind:'equipment',id:'adjustable_bench',revision:3,archived:false,payload:{name:'Скамья',group:'Скамьи',synonyms:['лавка'],provides:['adjustable_bench','flat_bench']}};
+  const shared={active:true,revision:3,records:[],equipment:[equipment,{kind:'equipment',id:'flat_bench',revision:0,archived:false,payload:{name:'Плоская скамья',group:'Скамьи',synonyms:[],provides:['flat_bench']}}]};
+  let attempt=0;
+  const ui=await setup({'GET /admin/api/standard':()=>({data:{items:[equipment],hasMore:false,offset:0}}),'GET /v1/catalog':()=>({data:shared}),'PUT /admin/api/standard/equipment/adjustable_bench':()=>++attempt===1?Promise.reject(new Error('offline')):({data:{revision:4}})});
+  t.after(()=>ui.dom.window.close());ui.w.document.querySelector('[data-view="standard:equipment"]').click();
+  await until(()=>ui.w.document.getElementById('table-wrap').textContent.includes('Скамья'));
+  ui.click('Изменить');await until(()=>ui.w.document.querySelector('#dialog-content form'));
+  ui.field('Название').value='Обновлённая скамья';ui.field('Причина изменения').value='Уточнение каталога';ui.submit();
+  await until(()=>ui.w.document.querySelector('#dialog-content .error').textContent);ui.submit();await until(()=>attempt===2);
+  const writes=ui.requests.filter(x=>x.method==='PUT');assert.deepEqual(writes[0].body,writes[1].body);assert.equal(writes[0].body.baseRevision,3);assert.deepEqual(writes[0].body.payload.provides,['adjustable_bench','flat_bench']);
+  assert.equal(ui.requests.some(x=>x.path.includes('/users/')),false);
+});
+
+test('standard template editor saves ordered exercises rest sets and shared gyms',async t=>{
+  const gymId='33333333-3333-4333-8333-333333333333';
+  const routine={kind:'routine',id,revision:2,archived:false,payload:{name:'План',note:'Тест',updatedAt:1,gymIds:[gymId],exercises:[{exerciseId:id,position:0,restSeconds:90,plannedSets:[{weightKg:50,reps:8,durationSec:null,speedKmh:null,inclinePct:null}]}]}};
+  const ui=await setup({'GET /admin/api/standard':()=>({data:{items:[routine],hasMore:false,offset:0}}),'GET /v1/catalog':()=>({data:{active:true,revision:2,records:[{kind:'exercise',id,archived:false,payload},{kind:'gym',id:gymId,archived:false,payload:{name:'Общий зал'}}],equipment:[]}}),['PUT /admin/api/standard/routine/'+id]:()=>({data:{revision:3}})});
+  t.after(()=>ui.dom.window.close());ui.w.document.querySelector('[data-view="standard:routine"]').click();await until(()=>ui.w.document.getElementById('table-wrap').textContent.includes('План'));ui.click('Изменить');await until(()=>ui.w.document.querySelector('#dialog-content form'));
+  ui.field('Причина изменения').value='Изменение программы';ui.field('Отдых, секунды').value='120';ui.submit();await until(()=>ui.requests.some(x=>x.method==='PUT'));
+  const write=ui.requests.find(x=>x.method==='PUT');assert.equal(write.body.payload.exercises[0].restSeconds,120);assert.equal(write.body.payload.exercises[0].plannedSets[0].reps,8);assert.deepEqual(write.body.payload.gymIds,[gymId]);assert.equal(write.body.payload.exercises[0].position,0);
+});

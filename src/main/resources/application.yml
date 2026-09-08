@@ -7,6 +7,10 @@ spring:
     password: ${DATABASE_PASSWORD}
     hikari:
       maximum-pool-size: 8
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
   liquibase:
     change-log: classpath:db/changelog/master.yaml
     analytics-enabled: false

@@ -107,3 +107,13 @@ Tombstone и идемпотентные операции хранятся до �
 подтверждённому аккаунту; вход — по отдельному логину и паролю администратора. [Настройка и эксплуатация](docs/admin.md).
 
 Тесты интерфейса: npm ci --ignore-scripts && npm test (Node.js 24, только для разработки/CI).
+
+## Стандартный каталог
+
+Backend использует Spring Data JPA/Hibernate; схема управляется Liquibase,
+`ddl-auto=validate`, Open Session in View отключён. Слои: `controller`, `service`,
+`repository`, `utils`, отдельно `config` и `security`. JSONB сохраняет агрегаты,
+PostgreSQL upsert и атомарные операции изолированы в репозиториях.
+
+[Контракт каталога, админка и порядок перехода Android](docs/catalog-transition.md).
+Переход выключен до явного запуска команды переноса.

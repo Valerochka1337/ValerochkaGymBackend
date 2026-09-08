@@ -5,7 +5,8 @@ import org.junit.jupiter.api.Test
 import org.springframework.mail.MailAuthenticationException
 import org.springframework.mail.SimpleMailMessage
 import org.springframework.mail.javamail.JavaMailSenderImpl
-import tech.valerochkagym.web.ApiException
+import tech.valerochkagym.controller.advice.ApiException
+import tech.valerochkagym.service.auth.SmtpMailer
 
 class SmtpMailerTest {
   private class Sender : JavaMailSenderImpl() {
