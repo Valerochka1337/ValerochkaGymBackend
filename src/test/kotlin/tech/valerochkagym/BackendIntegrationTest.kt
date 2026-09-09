@@ -501,7 +501,7 @@ class BackendIntegrationTest {
         ),
       )
       assertEquals(
-        "7",
+        "8",
         command(
           "psql",
           "-U",
@@ -678,6 +678,22 @@ class BackendIntegrationTest {
     val doc = json.readTree(response.body())
     assertTrue(doc["paths"].has("/v1/auth/login"))
     assertTrue(doc["paths"].has("/v1/sync"))
+    for ((path, verbs) in
+      mapOf(
+        "/v1/sync" to listOf("get", "post"),
+        "/v1/sync/changes" to listOf("get"),
+        "/v1/records/{kind}" to listOf("get"),
+        "/v1/records/{kind}/{id}" to listOf("get"),
+      )) {
+      for (verb in verbs) {
+        val responseSchema = doc["paths"][path][verb]["responses"]["200"]
+        assertEquals(
+          "string",
+          responseSchema["headers"]["X-Gym-Capabilities"]["schema"]["type"].asString(),
+        )
+        assertTrue(responseSchema.has("content"))
+      }
+    }
     val output = java.nio.file.Path.of("build/reports/openapi.json")
     java.nio.file.Files.createDirectories(output.parent)
     java.nio.file.Files.writeString(output, response.body())
@@ -917,7 +933,495 @@ class BackendIntegrationTest {
     )
   }
 
-  data class Reply(val status: Int, val body: JsonNode?)
+  private fun calendarRoutine() =
+    mapOf(
+      "name" to "План",
+      "note" to "",
+      "updatedAt" to 1,
+      "gymIds" to emptyList<String>(),
+      "exercises" to emptyList<Any>(),
+    )
+
+  private fun calendarPush(
+    token: String,
+    rows: List<Any>,
+    operation: UUID = UUID.randomUUID(),
+    capabilities: String? = "calendar-plans",
+    version: String = "2",
+  ) =
+    call(
+      "POST",
+      "/sync",
+      mapOf("operationId" to operation, "changes" to rows),
+      token,
+      version,
+      capabilities,
+    )
+
+  @Test
+  fun `calendar capability filters every read and preserves retries legacy payload and owner isolation`() {
+    val token = account()["accessToken"].asString()
+    val other = account()["accessToken"].asString()
+    val routine = UUID.randomUUID().toString()
+    val plan = UUID.randomUUID().toString()
+    val schedule = UUID.randomUUID().toString()
+    val legacy = mapOf("routineId" to routine, "dateTimeMillis" to 1, "calendarEventId" to "legacy")
+    val rows =
+      listOf(
+        change(routine, payload = calendarRoutine(), kind = "routine"),
+        change(schedule, payload = legacy, kind = "schedule"),
+        change(
+          plan,
+          payload =
+            mapOf(
+              "routineId" to routine,
+              "startsAtMillis" to 0,
+              "timeZoneId" to "UTC",
+              "legacyScheduleId" to schedule,
+            ),
+          kind = "calendar_plan",
+        ),
+      )
+    val operation = UUID.randomUUID()
+    assertEquals(426, calendarPush(token, rows, operation, null).status)
+    assertEquals(426, calendarPush(token, rows, operation, "future-feature").status)
+    assertEquals(0, call("GET", "/sync", token = token).body!!["revision"].asInt())
+    val saved = calendarPush(token, rows, operation, "future-feature, calendar-plans", "3")
+    assertEquals(200, saved.status, saved.toString())
+    assertEquals("calendar-plans", saved.capabilities)
+    assertEquals(saved.body, calendarPush(token, rows, operation).body)
+    assertEquals(409, calendarPush(token, rows.dropLast(1), operation).status)
+    assertEquals(426, calendarPush(token, rows, operation, null).status)
+    assertEquals(2, call("GET", "/sync", token = token).body!!["records"].size())
+    assertEquals(
+      3,
+      call("GET", "/sync", token = token, capabilities = "calendar-plans").body!!["records"].size(),
+    )
+    assertEquals(
+      json.valueToTree(legacy),
+      call("GET", "/records/schedule/$schedule", token = token).body!!["payload"],
+    )
+    assertEquals(0, call("GET", "/records/calendar_plan", token = token).body!!.size())
+    assertEquals(404, call("GET", "/records/calendar_plan/$plan", token = token).status)
+    assertEquals(
+      1,
+      call("GET", "/records/calendar_plan", token = token, capabilities = "calendar-plans")
+        .body!!
+        .size(),
+    )
+    assertEquals(
+      200,
+      call("GET", "/records/calendar_plan/$plan", token = token, capabilities = "calendar-plans")
+        .status,
+    )
+    assertEquals(
+      404,
+      call("GET", "/records/calendar_plan/$plan", token = other, capabilities = "calendar-plans")
+        .status,
+    )
+    assertEquals(
+      0,
+      call("GET", "/sync", token = other, capabilities = "calendar-plans").body!!["records"].size(),
+    )
+    val first = call("GET", "/sync/changes?limit=1", token = token).body!!
+    assertEquals("routine", first["records"][0]["kind"].asString())
+    val last =
+      call("GET", "/sync/changes?limit=1&cursor=${first["nextCursor"].asString()}", token = token)
+        .body!!
+    assertEquals("schedule", last["records"][0]["kind"].asString())
+    assertTrue(last["nextCursor"].isNull)
+    assertEquals(
+      3,
+      call("GET", "/sync/changes", token = token, capabilities = "calendar-plans")
+        .body!!["records"]
+        .size(),
+    )
+    assertEquals(
+      400,
+      calendarPush(
+          other,
+          listOf(
+            change(
+              payload = mapOf("routineId" to routine, "startsAtMillis" to 0, "timeZoneId" to "UTC"),
+              kind = "calendar_plan",
+            )
+          ),
+        )
+        .status,
+    )
+  }
+
+  @Test
+  fun `calendar validates temporal bounds original DST keys and atomic graph deletion`() {
+    val token = account()["accessToken"].asString()
+    val routine = UUID.randomUUID().toString()
+    val rule = UUID.randomUUID().toString()
+    val rulePayload =
+      mapOf(
+        "routineId" to routine,
+        "isoDay" to 7,
+        "localTime" to "02:30",
+        "timeZoneId" to "Europe/Berlin",
+        "startLocalDate" to "1970-01-01",
+        "legacyRuleKey" to "источник",
+      )
+    fun exception(key: String, kind: String = "CANCELLED", moved: Any? = null) =
+      mapOf("ruleId" to rule, "instanceKey" to key, "kind" to kind, "movedAtMillis" to moved)
+    fun exceptionId(key: String) =
+      UUID.nameUUIDFromBytes(
+          "ValerochkaGym.calendar-exception:v1:$rule:$key".toByteArray(Charsets.UTF_8)
+        )
+        .toString()
+    val gap = "2026-03-29T02:30[Europe/Berlin]"
+    val overlap = "2026-10-25T02:30[Europe/Berlin]"
+    val rows =
+      listOf(
+        change(routine, payload = calendarRoutine(), kind = "routine"),
+        change(rule, payload = rulePayload, kind = "calendar_rule"),
+        change(exceptionId(gap), payload = exception(gap), kind = "calendar_exception"),
+        change(
+          exceptionId(overlap),
+          payload = exception(overlap, "MOVED", 0),
+          kind = "calendar_exception",
+        ),
+      )
+    assertEquals(200, calendarPush(token, rows).status)
+    assertEquals(
+      400,
+      calendarPush(
+          token,
+          listOf(change(rule, 1, rulePayload + ("localTime" to "03:30"), "calendar_rule")),
+        )
+        .status,
+    )
+    assertEquals(400, calendarPush(token, listOf(change(rule, 1, null, "calendar_rule"))).status)
+    assertEquals(400, calendarPush(token, listOf(change(routine, 1, null, "routine"))).status)
+    assertEquals(
+      400,
+      calendarPush(token, listOf(change(payload = exception(gap), kind = "calendar_exception")))
+        .status,
+    )
+    for (key in
+      listOf(
+        "2026-03-30T02:30[Europe/Berlin]",
+        "1969-12-28T02:30[Europe/Berlin]",
+        "2026-03-29T03:30[Europe/Berlin]",
+      )) {
+      assertEquals(
+        400,
+        calendarPush(
+            token,
+            listOf(change(exceptionId(key), payload = exception(key), kind = "calendar_exception")),
+          )
+          .status,
+      )
+    }
+    assertEquals(
+      400,
+      calendarPush(
+          token,
+          listOf(change(exceptionId(gap), 1, exception(gap, "CANCELLED", 0), "calendar_exception")),
+        )
+        .status,
+    )
+    assertEquals(
+      400,
+      calendarPush(
+          token,
+          listOf(change(exceptionId(gap), 1, exception(gap, "MOVED", null), "calendar_exception")),
+        )
+        .status,
+    )
+    assertEquals(
+      400,
+      calendarPush(token, listOf(change(payload = rulePayload, kind = "calendar_rule"))).status,
+    )
+    val plan = mapOf("routineId" to routine, "startsAtMillis" to 0, "timeZoneId" to "UTC")
+    for (bad in
+      listOf(
+        plan + ("startsAtMillis" to -1),
+        plan + ("startsAtMillis" to 4133980800000L),
+        plan + ("timeZoneId" to "+03:00"),
+        plan + ("startsAtMillis" to 0.5),
+        plan + ("eventId" to "private"),
+      )) {
+      assertEquals(
+        400,
+        calendarPush(token, listOf(change(payload = bad, kind = "calendar_plan"))).status,
+      )
+    }
+    for (millis in listOf(0L, 4133980799999L)) {
+      assertEquals(
+        200,
+        calendarPush(
+            token,
+            listOf(change(payload = plan + ("startsAtMillis" to millis), kind = "calendar_plan")),
+          )
+          .status,
+      )
+    }
+    // Delete the full rule graph atomically, independent of request ordering.
+    assertEquals(
+      200,
+      calendarPush(
+          token,
+          listOf(
+            change(rule, 1, null, "calendar_rule"),
+            change(exceptionId(gap), 1, null, "calendar_exception"),
+            change(exceptionId(overlap), 1, null, "calendar_exception"),
+          ),
+        )
+        .status,
+    )
+    assertEquals(
+      3,
+      call("GET", "/sync/changes", token = token, capabilities = "calendar-plans")
+        .body!!["records"]
+        .count { it["deleted"].asBoolean() },
+    )
+    assertTrue(
+      call("GET", "/sync/changes", token = token).body!!["records"].all {
+        !it["kind"].asString().startsWith("calendar_")
+      }
+    )
+  }
+
+  @Test
+  fun `calendar checks zone rendered boundaries rule syntax and live source uniqueness`() {
+    val token = account()["accessToken"].asString()
+    val routine = UUID.randomUUID().toString()
+    assertEquals(
+      200,
+      push(token, listOf(change(routine, payload = calendarRoutine(), kind = "routine"))).status,
+    )
+    val rule =
+      mapOf(
+        "routineId" to routine,
+        "isoDay" to 1,
+        "localTime" to "09:00",
+        "timeZoneId" to "UTC",
+        "startLocalDate" to "2100-12-31",
+      )
+    for (payload in
+      listOf(
+        rule + ("isoDay" to 0),
+        rule + ("isoDay" to 8),
+        rule + ("localTime" to "9:00"),
+        rule + ("localTime" to "24:00"),
+        rule + ("startLocalDate" to "2101-01-01"),
+        rule + ("startLocalDate" to "2026-02-30"),
+        rule + ("timeZoneId" to "missing/zone"),
+        rule + ("routineId" to routine.uppercase()),
+      )) {
+      assertEquals(
+        400,
+        calendarPush(token, listOf(change(payload = payload, kind = "calendar_rule"))).status,
+      )
+    }
+    assertEquals(
+      200,
+      calendarPush(token, listOf(change(payload = rule, kind = "calendar_rule"))).status,
+    )
+    val source = UUID.randomUUID().toString()
+    val plan =
+      mapOf(
+        "routineId" to routine,
+        "startsAtMillis" to -3600000L,
+        "timeZoneId" to "Europe/Berlin",
+        "legacyScheduleId" to source,
+      )
+    assertEquals(
+      200,
+      calendarPush(token, listOf(change(payload = plan, kind = "calendar_plan"))).status,
+    )
+    assertEquals(
+      400,
+      calendarPush(token, listOf(change(payload = plan, kind = "calendar_plan"))).status,
+    )
+    assertEquals(
+      400,
+      calendarPush(
+          token,
+          listOf(
+            change(
+              payload = plan + mapOf("startsAtMillis" to -3600001L, "legacyScheduleId" to null),
+              kind = "calendar_plan",
+            )
+          ),
+        )
+        .status,
+    )
+    assertEquals(
+      400,
+      calendarPush(
+          token,
+          listOf(
+            change(
+              payload =
+                plan +
+                  mapOf(
+                    "startsAtMillis" to 4133980799999L,
+                    "timeZoneId" to "Pacific/Kiritimati",
+                    "legacyScheduleId" to null,
+                  ),
+              kind = "calendar_plan",
+            )
+          ),
+        )
+        .status,
+    )
+    val ruleId = UUID.randomUUID().toString()
+    val activeRule = rule + mapOf("isoDay" to 7, "startLocalDate" to "1970-01-01")
+    assertEquals(
+      200,
+      calendarPush(token, listOf(change(ruleId, payload = activeRule, kind = "calendar_rule")))
+        .status,
+    )
+    val key = "2026-03-29T09:00[UTC]"
+    val id =
+      UUID.nameUUIDFromBytes(
+          "ValerochkaGym.calendar-exception:v1:$ruleId:$key".toByteArray(Charsets.UTF_8)
+        )
+        .toString()
+    val moved =
+      mapOf(
+        "ruleId" to ruleId,
+        "instanceKey" to key,
+        "kind" to "MOVED",
+        "movedAtMillis" to 4133980800000L,
+      )
+    assertEquals(
+      400,
+      calendarPush(token, listOf(change(id, payload = moved, kind = "calendar_exception"))).status,
+    )
+    assertEquals(
+      200,
+      calendarPush(
+          token,
+          listOf(
+            change(
+              id,
+              payload = moved + ("movedAtMillis" to 4133980799999L),
+              kind = "calendar_exception",
+            )
+          ),
+        )
+        .status,
+    )
+  }
+
+  @Test
+  fun `calendar refuses resurrecting deleted rule identity and keeps operation retry valid`() {
+    val token = account()["accessToken"].asString()
+    val routine = UUID.randomUUID().toString()
+    val rule = UUID.randomUUID().toString()
+    val payload =
+      mapOf(
+        "routineId" to routine,
+        "isoDay" to 1,
+        "localTime" to "09:00",
+        "timeZoneId" to "UTC",
+        "startLocalDate" to "2026-01-01",
+      )
+    assertEquals(
+      200,
+      calendarPush(
+          token,
+          listOf(
+            change(routine, payload = calendarRoutine(), kind = "routine"),
+            change(rule, payload = payload, kind = "calendar_rule"),
+          ),
+        )
+        .status,
+    )
+    val operation = UUID.randomUUID()
+    val deleted = listOf(change(rule, 1, null, "calendar_rule"))
+    val result = calendarPush(token, deleted, operation)
+    assertEquals(200, result.status)
+    assertEquals(result.body, calendarPush(token, deleted, operation).body)
+    for (changed in
+      listOf(
+        payload,
+        payload + ("isoDay" to 2),
+        payload + ("localTime" to "10:00"),
+        payload + ("timeZoneId" to "Europe/Berlin"),
+        payload + ("startLocalDate" to "2026-02-01"),
+      )) {
+      assertEquals(
+        400,
+        calendarPush(token, listOf(change(rule, 2, changed, "calendar_rule"))).status,
+      )
+    }
+    val snapshot = call("GET", "/sync", token = token, capabilities = "calendar-plans").body!!
+    assertEquals(2, snapshot["revision"].asInt())
+    assertTrue(snapshot["records"].first { it["id"].asString() == rule }["deleted"].asBoolean())
+    assertEquals(
+      200,
+      calendarPush(
+          token,
+          listOf(change(payload = payload + ("localTime" to "10:00"), kind = "calendar_rule")),
+        )
+        .status,
+    )
+  }
+
+  @Test
+  fun `calendar requires canonical aggregate UUID spelling while legacy accepts uppercase`() {
+    val token = account()["accessToken"].asString()
+    val routine = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    assertEquals(
+      200,
+      push(
+          token,
+          listOf(change(routine.uppercase(), payload = calendarRoutine(), kind = "routine")),
+        )
+        .status,
+    )
+    for (kind in listOf("calendar_plan", "calendar_rule", "calendar_exception")) {
+      assertEquals(
+        400,
+        calendarPush(
+            token,
+            listOf(
+              change(
+                "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb".uppercase(),
+                payload = null,
+                kind = kind,
+              )
+            ),
+          )
+          .status,
+      )
+    }
+    assertEquals(1, call("GET", "/sync", token = token).body!!["revision"].asInt())
+    assertEquals(
+      200,
+      calendarPush(
+          token,
+          listOf(
+            change(
+              "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+              payload = mapOf("routineId" to routine, "startsAtMillis" to 0, "timeZoneId" to "UTC"),
+              kind = "calendar_plan",
+            )
+          ),
+        )
+        .status,
+    )
+  }
+
+  @Test
+  fun `calendar contract fixture is frozen`() {
+    val bytes = javaClass.getResourceAsStream("/cal01-sync-contract.json")!!.readAllBytes()
+    val hash =
+      java.security.MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") {
+        "%02x".format(it)
+      }
+    assertEquals("d841e2a65037ef94993575ac2dea4172ffaa272cdde63baa2a6867ba0ed29911", hash)
+    assertEquals("calendar-plans", json.readTree(bytes)["capability"].asString())
+  }
+
+  data class Reply(val status: Int, val body: JsonNode?, val capabilities: String? = null)
 
   private fun call(
     method: String,
@@ -925,12 +1429,14 @@ class BackendIntegrationTest {
     body: Any? = null,
     token: String? = null,
     version: String? = null,
+    capabilities: String? = null,
   ): Reply {
     val builder =
       HttpRequest.newBuilder(URI("http://localhost:$port/v1$path"))
         .header("Content-Type", "application/json")
     if (token != null) builder.header("Authorization", "Bearer $token")
     if (version != null) builder.header("X-Gym-Sync-Version", version)
+    if (capabilities != null) builder.header("X-Gym-Capabilities", capabilities)
     val response =
       client.send(
         builder
@@ -945,6 +1451,7 @@ class BackendIntegrationTest {
     return Reply(
       response.statusCode(),
       response.body().takeIf { it.isNotBlank() }?.let(json::readTree),
+      response.headers().firstValue("X-Gym-Capabilities").orElse(null),
     )
   }
 
@@ -1076,7 +1583,7 @@ class BackendIntegrationTest {
   @Test
   fun `expired access cannot read data`() {
     val a = account()
-    db.update("UPDATE sessions SET access_expires_at=now()-interval '1 second'")
+    db.update("UPDATE sessions SET access_expires_at=TIMESTAMPTZ '2000-01-01 00:00:00+00'")
     assertEquals(401, call("GET", "/sync", token = a["accessToken"].asString()).status)
   }
 
@@ -1178,7 +1685,7 @@ class BackendIntegrationTest {
 
   @Test
   fun `Liquibase has applied auth sync and admin changesets`() {
-    assertEquals(7, db.queryForObject("SELECT count(*) FROM databasechangelog", Int::class.java))
+    assertEquals(8, db.queryForObject("SELECT count(*) FROM databasechangelog", Int::class.java))
   }
 
   @Test

@@ -48,15 +48,22 @@ class SyncService(
       Record(it.kind, it.id, it.revision, it.deleted, it.payload?.let(json::readTree))
     }
 
-  fun snapshot(user: UUID, version: String? = "2"): Snapshot =
+  fun snapshot(user: UUID, version: String? = "2", calendarPlans: Boolean = false): Snapshot =
     tx.execute {
       requireVersion(catalog.readLock(), version)
       val revision = head(user, false)
       requireAccountVersion(user, version)
-      Snapshot(revision, records(user))
+      Snapshot(revision, records(user).filter { visible(it.kind, calendarPlans) })
     }!!
 
-  fun push(user: UUID, incoming: PushRequest, version: String? = "2"): PushResult {
+  fun push(
+    user: UUID,
+    incoming: PushRequest,
+    version: String? = "2",
+    calendarPlans: Boolean = false,
+  ): PushResult {
+    if (!calendarPlans && incoming.changes.any { it.kind in RecordValidator.calendarKinds })
+      throw ApiException(426, "capability_required", "Требуется возможность calendar-plans")
     val request =
       incoming.copy(
         changes =
@@ -118,6 +125,8 @@ class SyncService(
             "Создайте личную копию стандартного объекта",
           )
         val old = existing[key]
+        if (change.kind == "calendar_rule" && !change.deleted && old?.deleted == true)
+          bad("Удалённое правило требует нового UUID")
         if (change.kind == "workout" && !change.deleted) {
           val hasCoach =
             change.payload?.get("exercises")?.any { section ->
@@ -202,6 +211,7 @@ class SyncService(
     cursor: String?,
     limit: Int,
     version: String? = "2",
+    calendarPlans: Boolean = false,
   ): ChangesPage {
     if (after < 0 || limit !in 1..1000) bad("Некорректная пагинация")
     return tx.execute {
@@ -217,6 +227,7 @@ class SyncService(
         bad("Некорректный курсор")
       val rows =
         records(user)
+          .filter { visible(it.kind, calendarPlans) }
           .filter {
             it.revision > after &&
               (it.revision > rev ||
@@ -235,6 +246,9 @@ class SyncService(
       )
     }!!
   }
+
+  private fun visible(kind: String, calendarPlans: Boolean) =
+    calendarPlans || kind !in RecordValidator.calendarKinds
 
   private fun requireAccountVersion(user: UUID, version: String?) {
     if (heads.readLock(user).minSyncVersion >= 3 && version != "3")

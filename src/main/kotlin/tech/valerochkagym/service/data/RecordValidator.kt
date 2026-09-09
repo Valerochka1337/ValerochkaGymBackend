@@ -1,5 +1,7 @@
 package tech.valerochkagym.service.data
 
+import java.nio.charset.StandardCharsets
+import java.time.*
 import java.util.UUID
 import org.springframework.stereotype.Component
 import tech.valerochkagym.controller.advice.bad
@@ -20,7 +22,9 @@ class RecordValidator(
     }
 
   companion object {
-    val kinds = setOf("exercise", "gym", "routine", "workout", "measurement", "schedule")
+    val calendarKinds = setOf("calendar_plan", "calendar_rule", "calendar_exception")
+    val kinds =
+      setOf("exercise", "gym", "routine", "workout", "measurement", "schedule") + calendarKinds
     val measurementFields =
       setOf(
         "measuredAt",
@@ -267,6 +271,41 @@ class RecordValidator(
     }
   }
 
+  private fun calendarUuid(node: JsonNode?): UUID =
+    uuid(node).also { if (node!!.asString() != it.toString()) bad("UUID должен быть каноническим") }
+
+  private fun zone(n: JsonNode): ZoneId {
+    val value = text(n, "timeZoneId")
+    if (value !in ZoneId.getAvailableZoneIds()) bad("Некорректная временная зона")
+    return ZoneId.of(value)
+  }
+
+  private fun date(value: String): LocalDate {
+    val parsed =
+      try {
+        LocalDate.parse(value)
+      } catch (e: DateTimeException) {
+        bad("Некорректная дата")
+      }
+    if (parsed.toString() != value || parsed.year !in 1970..2100) bad("Дата вне диапазона")
+    return parsed
+  }
+
+  private fun time(value: String): LocalTime {
+    if (!value.matches(Regex("[0-9]{2}:[0-9]{2}"))) bad("Некорректное время")
+    return try {
+      LocalTime.parse(value)
+    } catch (e: DateTimeException) {
+      bad("Некорректное время")
+    }
+  }
+
+  private fun instant(n: JsonNode, key: String, zone: ZoneId) {
+    number(n, key, true, true, min = -1e15, max = 1e15)
+    val year = Instant.ofEpochMilli(n[key].asLong()).atZone(zone).year
+    if (year !in 1970..2100) bad("Дата вне диапазона")
+  }
+
   fun validate(kind: String, n: JsonNode) {
     when (kind) {
       "exercise" -> {
@@ -397,6 +436,35 @@ class RecordValidator(
         }
         number(n, "bodyFatPercentage", max = 100.0)
       }
+      "calendar_plan" -> {
+        shape(n, setOf("routineId", "startsAtMillis", "timeZoneId", "legacyScheduleId"))
+        calendarUuid(n["routineId"])
+        instant(n, "startsAtMillis", zone(n))
+        n["legacyScheduleId"]?.takeUnless { it.isNull }?.let(::calendarUuid)
+      }
+      "calendar_rule" -> {
+        shape(
+          n,
+          setOf("routineId", "isoDay", "localTime", "timeZoneId", "startLocalDate", "legacyRuleKey"),
+        )
+        calendarUuid(n["routineId"])
+        number(n, "isoDay", true, true, min = 1.0, max = 7.0)
+        time(text(n, "localTime"))
+        zone(n)
+        date(text(n, "startLocalDate"))
+        n["legacyRuleKey"]?.takeUnless { it.isNull }?.let { text(n, "legacyRuleKey", 1024) }
+      }
+      "calendar_exception" -> {
+        shape(n, setOf("ruleId", "instanceKey", "kind", "movedAtMillis"))
+        calendarUuid(n["ruleId"])
+        text(n, "instanceKey", 300)
+        enum(n, "kind", setOf("CANCELLED", "MOVED"))
+        if (
+          !n.has("movedAtMillis") ||
+            (n["kind"].asString() == "CANCELLED") != n["movedAtMillis"].isNull
+        )
+          bad("Некорректный перенос")
+      }
       "schedule" -> {
         shape(n, setOf("routineId", "dateTimeMillis", "calendarEventId"))
         uuid(n["routineId"])
@@ -432,6 +500,8 @@ class RecordValidator(
         .toSet()
 
     val sectionIds = mutableSetOf<UUID>()
+    val legacyPlans = mutableSetOf<UUID>()
+    val legacyRules = mutableSetOf<String>()
     fun ref(kind: String, id: JsonNode) {
       if (records[RecordKey(kind, uuid(id))]?.deleted != false) bad("Ссылка на отсутствующий $kind")
     }
@@ -484,6 +554,47 @@ class RecordValidator(
                   bad("Секция уже принадлежит другой тренировке")
               }
           }
+          "calendar_plan" -> {
+            ref("routine", n["routineId"])
+            n["legacyScheduleId"]
+              ?.takeUnless { it.isNull }
+              ?.let { if (!legacyPlans.add(calendarUuid(it))) bad("Повтор источника плана") }
+          }
+          "calendar_rule" -> {
+            ref("routine", n["routineId"])
+            n["legacyRuleKey"]
+              ?.takeUnless { it.isNull }
+              ?.let { if (!legacyRules.add(it.asString())) bad("Повтор источника правила") }
+            val old = before[RecordKey(r.kind, r.id)]?.payload
+            if (
+              old != null &&
+                listOf("isoDay", "localTime", "timeZoneId", "startLocalDate").any {
+                  old[it] != n[it]
+                }
+            )
+              bad("Изменённое расписание требует нового UUID правила")
+          }
+          "calendar_exception" -> {
+            ref("calendar_rule", n["ruleId"])
+            val rule =
+              records.getValue(RecordKey("calendar_rule", calendarUuid(n["ruleId"]))).payload!!
+            val key = text(n, "instanceKey", 300)
+            val suffix = "T${rule["localTime"].asString()}[${rule["timeZoneId"].asString()}]"
+            if (!key.endsWith(suffix)) bad("Ключ не соответствует правилу")
+            val day = date(key.removeSuffix(suffix))
+            if (
+              day < date(rule["startLocalDate"].asString()) ||
+                day.dayOfWeek.value != rule["isoDay"].asInt()
+            )
+              bad("Дата не соответствует правилу")
+            val expected =
+              UUID.nameUUIDFromBytes(
+                "ValerochkaGym.calendar-exception:v1:${n["ruleId"].asString()}:$key"
+                  .toByteArray(StandardCharsets.UTF_8)
+              )
+            if (r.id != expected) bad("Некорректный UUID исключения")
+            if (n["kind"].asString() == "MOVED") instant(n, "movedAtMillis", zone(rule))
+          }
           "schedule" -> ref("routine", n["routineId"])
         }
       }
@@ -503,7 +614,10 @@ class RecordValidator(
         n["gymIds"].forEach { add("gym", it) }
         if (r.kind == "workout") add("routine", n["routineId"])
       }
+      "calendar_plan",
+      "calendar_rule",
       "schedule" -> add("routine", n["routineId"])
+      "calendar_exception" -> add("calendar_rule", n["ruleId"])
     }
     return refs
   }
