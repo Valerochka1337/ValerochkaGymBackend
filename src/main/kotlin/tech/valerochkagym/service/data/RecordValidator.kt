@@ -169,10 +169,35 @@ class RecordValidator(
       bad("Некорректное оборудование")
   }
 
+  private val coachSetFields =
+    setOf(
+      "syncId",
+      "originalWeightKg",
+      "originalReps",
+      "originalDurationSec",
+      "originalSpeedKmh",
+      "originalInclinePct",
+      "targetWeightKg",
+      "targetReps",
+      "targetDurationSec",
+      "targetSpeedKmh",
+      "targetInclinePct",
+      "actualWeightKg",
+      "actualReps",
+      "actualDurationSec",
+      "actualSpeedKmh",
+      "actualInclinePct",
+      "setType",
+      "reportedFeelingsJson",
+      "restSnapshotJson",
+      "coachMutationRevision",
+    )
+
   private fun set(n: JsonNode, completed: Boolean) {
     shape(
       n,
-      if (completed) setFields + setOf("setIndex", "isCompleted", "completedAt") else setFields,
+      if (completed) setFields + setOf("setIndex", "isCompleted", "completedAt") + coachSetFields
+      else setFields,
     )
     setFields.forEach {
       number(
@@ -184,6 +209,58 @@ class RecordValidator(
       )
     }
     if (completed) {
+      n["syncId"]?.let(::uuid)
+      coachSetFields
+        .filter { it.startsWith("original") || it.startsWith("target") || it.startsWith("actual") }
+        .forEach {
+          number(
+            n,
+            it,
+            integer = it.endsWith("Reps") || it.endsWith("DurationSec"),
+            min = if (it.endsWith("InclinePct")) -100.0 else 0.0,
+            max = 1e6,
+          )
+        }
+      n["setType"]?.let {
+        enum(
+          n,
+          "setType",
+          setOf(
+            "WORK",
+            "WARMUP",
+            "TIMED",
+            "CARDIO",
+            "COUNTERWEIGHT",
+            "BAND",
+            "INTERRUPTED",
+            "UNKNOWN",
+          ),
+        )
+      }
+      number(n, "coachMutationRevision", integer = true)
+      n["reportedFeelingsJson"]?.let {
+        val value = json.readTree(text(n, "reportedFeelingsJson", 4096))
+        if (
+          !value.isArray ||
+            value.size() > 10 ||
+            value.any { v ->
+              !v.isString ||
+                v.asString() !in setOf("PAIN", "FATIGUE", "TECHNIQUE_BREAKDOWN", "INTERRUPTED")
+            }
+        )
+          bad("Некорректные ощущения")
+      }
+      n["restSnapshotJson"]
+        ?.takeUnless { it.isNull }
+        ?.let {
+          val value = json.readTree(text(n, "restSnapshotJson", 4096))
+          shape(
+            value,
+            setOf("plannedSeconds", "startedAtMillis", "completedAtMillis", "extraSeconds"),
+          )
+          listOf("plannedSeconds", "startedAtMillis", "completedAtMillis", "extraSeconds")
+            .forEach { field -> number(value, field, integer = true) }
+        }
       number(n, "setIndex", true, true, max = 1000.0)
       bool(n, "isCompleted")
       number(n, "completedAt", integer = true)
@@ -256,10 +333,20 @@ class RecordValidator(
       "workout" -> {
         shape(
           n,
-          setOf("name", "note", "routineId", "startedAt", "finishedAt", "exercises", "gymIds"),
+          setOf(
+            "name",
+            "note",
+            "routineId",
+            "startedAt",
+            "finishedAt",
+            "exercises",
+            "gymIds",
+            "coachRevision",
+          ),
         )
         text(n, "name")
         text(n, "note", 10000, true)
+        number(n, "coachRevision", integer = true)
         number(n, "startedAt", true, true)
         number(n, "finishedAt", integer = true)
         ids(n, "gymIds")
@@ -275,9 +362,15 @@ class RecordValidator(
           number(row, "position", true, true, max = 1000.0)
           val sets = array(row, "sets", 1000)
           sets.forEach { set(it, true) }
+          val stableIds = sets.mapNotNull { it.get("syncId")?.asString() }
+          if (stableIds.distinct().size != stableIds.size) bad("Повтор идентификатора подхода")
           if (sets.map { it["setIndex"].asInt() }.distinct().size != sets.size)
             bad("Повтор подхода")
         }
+        val allSetIds =
+          rows.flatMap { it["sets"].toList() }.mapNotNull { it.get("syncId")?.asString() }
+        if (allSetIds.distinct().size != allSetIds.size)
+          bad("Повтор идентификатора подхода в тренировке")
         if (
           rows.map { it["sectionId"].asString() }.distinct().size != rows.size ||
             rows.map { it["position"].asInt() }.distinct().size != rows.size
