@@ -40,7 +40,7 @@ class BearerFilter(
         (request.requestURI.startsWith("/v1/sync") ||
           request.requestURI.startsWith("/v1/records")) &&
           catalog.findById(1).orElseThrow().active &&
-          request.getHeader("X-Gym-Sync-Version") != "2"
+          request.getHeader("X-Gym-Sync-Version") !in setOf("2", "3")
       )
         throw ApiException(426, "client_update_required", "Обновите приложение для общего каталога")
       val bounded =

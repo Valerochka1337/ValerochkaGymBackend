@@ -36,6 +36,7 @@ class SyncService(
   private val json: ObjectMapper,
   private val validator: RecordValidator,
   private val crypto: Crypto,
+  private val jdbc: org.springframework.jdbc.core.JdbcTemplate,
 ) {
   private fun head(user: UUID, exclusive: Boolean): Long {
     postgres.ensureHead(user)
@@ -50,7 +51,9 @@ class SyncService(
   fun snapshot(user: UUID, version: String? = "2"): Snapshot =
     tx.execute {
       requireVersion(catalog.readLock(), version)
-      Snapshot(head(user, false), records(user))
+      val revision = head(user, false)
+      requireAccountVersion(user, version)
+      Snapshot(revision, records(user))
     }!!
 
   fun push(user: UUID, incoming: PushRequest, version: String? = "2"): PushResult {
@@ -71,6 +74,7 @@ class SyncService(
       val catalogHead = catalog.readLock()
       requireVersion(catalogHead, version)
       val previous = head(user, true)
+      requireAccountVersion(user, version)
       val operation = operations.findById(OperationId(user, request.operationId)).orElse(null)
       if (operation != null) {
         if (operation.requestHash != hash)
@@ -114,6 +118,30 @@ class SyncService(
             "Создайте личную копию стандартного объекта",
           )
         val old = existing[key]
+        if (change.kind == "workout" && !change.deleted) {
+          val hasCoach =
+            change.payload?.get("exercises")?.any { section ->
+              section.get("sets")?.any { it.has("syncId") } == true
+            } == true
+          val hadCoach =
+            old?.payload?.get("exercises")?.any { section ->
+              section.get("sets")?.any { it.has("syncId") } == true
+            } == true
+          if (hasCoach && version != "3")
+            throw ApiException(426, "client_update_required", "Обновите приложение для Live Coach")
+          if (
+            hadCoach &&
+              change.payload?.get("exercises")?.any { section ->
+                section.get("sets")?.any { !it.has("syncId") } == true
+              } == true
+          )
+            throw ApiException(
+              409,
+              "revision_conflict",
+              "Старая очередь не содержит данные Live Coach. Выберите актуальную версию",
+            )
+          if (hasCoach) heads.writeLock(user).minSyncVersion = 3
+        }
         if ((old?.revision ?: 0) != change.baseRevision)
           throw ApiException(
             409,
@@ -153,6 +181,15 @@ class SyncService(
           )
         )
       }
+      request.changes
+        .filter { it.kind == "workout" && it.deleted }
+        .forEach {
+          jdbc.update(
+            "UPDATE coach_journal SET payload=NULL,deleted=TRUE WHERE user_id=? AND workout_id=?",
+            user,
+            it.id,
+          )
+        }
       heads.writeLock(user).revision = revision
       operations.save(OperationEntity(user, request.operationId, hash, revision))
       PushResult(revision)
@@ -170,6 +207,7 @@ class SyncService(
     return tx.execute {
       requireVersion(catalog.readLock(), version)
       val high = head(user, false)
+      requireAccountVersion(user, version)
       val parts = cursor?.split(":")
       if (parts != null && parts.size != 3) bad("Некорректный курсор")
       val rev = parts?.get(0)?.toLongOrNull() ?: after
@@ -198,8 +236,13 @@ class SyncService(
     }!!
   }
 
+  private fun requireAccountVersion(user: UUID, version: String?) {
+    if (heads.readLock(user).minSyncVersion >= 3 && version != "3")
+      throw ApiException(426, "client_update_required", "Обновите приложение для Live Coach")
+  }
+
   private fun requireVersion(head: CatalogStateEntity, version: String?) {
-    if (head.active && version != "2")
+    if (head.active && version !in setOf("2", "3"))
       throw ApiException(426, "client_update_required", "Обновите приложение для общего каталога")
   }
 }

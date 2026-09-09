@@ -501,7 +501,7 @@ class BackendIntegrationTest {
         ),
       )
       assertEquals(
-        "6",
+        "7",
         command(
           "psql",
           "-U",
@@ -639,6 +639,33 @@ class BackendIntegrationTest {
   }
 
   @Test
+  fun `Android Coach aggregates round trip every extended field through protocol three`() {
+    val fixture = json.readTree(javaClass.getResourceAsStream("/android-coach-snapshot.json"))
+    val token = account()["accessToken"].asString()
+    val changes =
+      fixture["records"].toList().map { r ->
+        change(r["id"].asString(), 0, r["payload"], r["kind"].asString())
+      }
+    val result =
+      call(
+        "POST",
+        "/sync",
+        mapOf("operationId" to UUID.randomUUID().toString(), "changes" to changes),
+        token,
+        "3",
+      )
+    assertEquals(200, result.status, result.toString())
+    val restored =
+      call("GET", "/sync", token = token, version = "3").body!!["records"].associateBy {
+        it["id"].asString()
+      }
+    fixture["records"].forEach {
+      assertEquals(it["payload"], restored.getValue(it["id"].asString())["payload"])
+    }
+    assertEquals(426, call("GET", "/sync", token = token, version = "2").status)
+  }
+
+  @Test
   fun `OpenAPI describes auth and synchronization endpoints`() {
     val token = account()["accessToken"].asString()
     val request =
@@ -656,13 +683,254 @@ class BackendIntegrationTest {
     java.nio.file.Files.writeString(output, response.body())
   }
 
+  @Test
+  fun `extended workout atomically requires protocol three and refuses legacy outbox downgrade`() {
+    val token = account()["accessToken"].asString()
+    val exerciseId = UUID.randomUUID().toString()
+    val workoutId = UUID.randomUUID().toString()
+    val section = UUID.randomUUID().toString()
+    val set =
+      mapOf(
+        "syncId" to UUID.randomUUID(),
+        "setIndex" to 0,
+        "weightKg" to 10.0,
+        "reps" to 5,
+        "isCompleted" to true,
+        "completedAt" to 2L,
+        "targetWeightKg" to 10.0,
+        "targetReps" to 8,
+        "originalWeightKg" to 10.0,
+        "originalReps" to 8,
+        "actualWeightKg" to 10.0,
+        "actualReps" to 5,
+        "setType" to "WORK",
+        "reportedFeelingsJson" to "[]",
+        "coachMutationRevision" to 1,
+      )
+    fun workout(values: Map<String, Any>) =
+      mapOf(
+        "name" to "Тренировка",
+        "note" to "",
+        "routineId" to null,
+        "startedAt" to 1L,
+        "finishedAt" to 3L,
+        "gymIds" to emptyList<String>(),
+        "coachRevision" to 1,
+        "exercises" to
+          listOf(
+            mapOf(
+              "sectionId" to section,
+              "exerciseId" to exerciseId,
+              "position" to 0,
+              "sets" to listOf(values),
+            )
+          ),
+      )
+    val request =
+      mapOf(
+        "operationId" to UUID.randomUUID(),
+        "changes" to
+          listOf(change(exerciseId), change(workoutId, payload = workout(set), kind = "workout")),
+      )
+    assertEquals(426, call("POST", "/sync", request, token, "2").status)
+    assertEquals(0, call("GET", "/sync", token = token, version = "2").body!!["records"].size())
+    assertEquals(200, call("POST", "/sync", request, token, "3").status)
+    assertEquals(426, call("GET", "/sync", token = token, version = "2").status)
+    val legacy =
+      mapOf(
+        "weightKg" to 10.0,
+        "reps" to 5,
+        "setIndex" to 0,
+        "isCompleted" to true,
+        "completedAt" to 2L,
+      )
+    val downgrade =
+      mapOf(
+        "operationId" to UUID.randomUUID(),
+        "changes" to listOf(change(workoutId, 1, workout(legacy), "workout")),
+      )
+    assertEquals(409, call("POST", "/sync", downgrade, token, "3").status)
+    val restored =
+      call("GET", "/sync", token = token, version = "3").body!!["records"].first {
+        it["kind"].asString() == "workout"
+      }
+    assertEquals(8, restored["payload"]["exercises"][0]["sets"][0]["targetReps"].asInt())
+  }
+
+  @Test
+  fun `deleted journal tombstones do not consume the live event quota`() {
+    val session = account()
+    val token = session["accessToken"].asString()
+    val owner = UUID.fromString(session["userId"].asString())
+    val workout = UUID.randomUUID()
+    val body =
+      mapOf(
+        "name" to "Тренировка",
+        "note" to "",
+        "routineId" to null,
+        "startedAt" to 1L,
+        "finishedAt" to 2L,
+        "gymIds" to emptyList<String>(),
+        "exercises" to emptyList<Any>(),
+      )
+    assertEquals(
+      200,
+      push(token, listOf(change(workout.toString(), payload = body, kind = "workout"))).status,
+    )
+    val device = UUID.randomUUID()
+    db.update(
+      "INSERT INTO coach_journal(user_id,id,workout_id,device_id,created_at,payload,deleted) SELECT ?,md5('removed-event-' || n)::uuid,?,?,0,NULL,TRUE FROM generate_series(1,100000) n",
+      owner,
+      workout,
+      device,
+    )
+    val entry =
+      mapOf(
+        "id" to UUID.randomUUID(),
+        "workoutId" to workout,
+        "deviceId" to device,
+        "createdAt" to 1L,
+        "payload" to mapOf("text" to "Новая запись"),
+      )
+    assertEquals(
+      200,
+      call("POST", "/coach/journal", mapOf("entries" to listOf(entry)), token, "3").status,
+    )
+    assertEquals(
+      1,
+      call("GET", "/coach/journal", token = token, version = "3").body!!["entries"].size(),
+    )
+  }
+
+  @Test
+  fun `coach journal activates protocol atomically and rejects conflicting event identity`() {
+    val session = account()
+    val token = session["accessToken"].asString()
+    val workout = UUID.randomUUID().toString()
+    val body =
+      mapOf(
+        "name" to "Тренировка",
+        "note" to "",
+        "routineId" to null,
+        "startedAt" to 1L,
+        "finishedAt" to 2L,
+        "gymIds" to emptyList<String>(),
+        "exercises" to emptyList<Any>(),
+      )
+    assertEquals(200, push(token, listOf(change(workout, payload = body, kind = "workout"))).status)
+    val entry =
+      mapOf(
+        "id" to UUID.randomUUID(),
+        "workoutId" to workout,
+        "deviceId" to UUID.randomUUID(),
+        "createdAt" to 1L,
+        "payload" to mapOf("kind" to "message", "text" to "Не восстановился"),
+      )
+    val request = mapOf("entries" to listOf(entry))
+    assertEquals(426, call("POST", "/coach/journal", request, token, "2").status)
+    assertEquals(200, call("GET", "/sync", token = token, version = "2").status)
+    assertEquals(200, call("POST", "/coach/journal", request, token, "3").status)
+    assertEquals(200, call("POST", "/coach/journal", request, token, "3").status)
+    assertEquals(426, call("GET", "/sync", token = token, version = "2").status)
+    assertEquals(200, call("GET", "/sync", token = token, version = "3").status)
+    assertEquals(
+      409,
+      call(
+          "POST",
+          "/coach/journal",
+          mapOf("entries" to listOf(entry + ("payload" to mapOf("text" to "другое")))),
+          token,
+          "3",
+        )
+        .status,
+    )
+    assertEquals(
+      1,
+      call("GET", "/coach/journal", token = token, version = "3").body!!["entries"].size(),
+    )
+    val other = account()["accessToken"].asString()
+    assertEquals(409, call("POST", "/coach/journal", request, other, "3").status)
+    assertEquals(200, call("GET", "/sync", token = other, version = "2").status)
+  }
+
+  @Test
+  fun `coach pages hold a high watermark and workout deletion prevents journal resurrection`() {
+    val session = account()
+    val token = session["accessToken"].asString()
+    val workout = UUID.randomUUID().toString()
+    val body =
+      mapOf(
+        "name" to "Тренировка",
+        "note" to "",
+        "routineId" to null,
+        "startedAt" to 1L,
+        "finishedAt" to 2L,
+        "gymIds" to emptyList<String>(),
+        "exercises" to emptyList<Any>(),
+      )
+    assertEquals(200, push(token, listOf(change(workout, payload = body, kind = "workout"))).status)
+    val device = UUID.randomUUID()
+    fun entry(index: Int) =
+      mapOf(
+        "id" to UUID.randomUUID(),
+        "workoutId" to workout,
+        "deviceId" to device,
+        "createdAt" to index,
+        "payload" to mapOf("text" to "$index"),
+      )
+    val entries = listOf(entry(1), entry(2), entry(3))
+    val request = mapOf("entries" to entries)
+    assertEquals(200, call("POST", "/coach/journal", request, token, "3").status)
+    val first = call("GET", "/coach/journal?limit=2", token = token, version = "3").body!!
+    assertEquals(2, first["entries"].size())
+    assertEquals(
+      200,
+      call("POST", "/coach/journal", mapOf("entries" to listOf(entry(4))), token, "3").status,
+    )
+    val next =
+      call(
+          "GET",
+          "/coach/journal?limit=2&cursor=" + first["nextCursor"].asString(),
+          token = token,
+          version = "3",
+        )
+        .body!!
+    assertEquals(1, next["entries"].size())
+    assertTrue(next["nextCursor"].isNull)
+    val deletion =
+      mapOf(
+        "operationId" to UUID.randomUUID(),
+        "changes" to listOf(change(workout, 1, null, "workout")),
+      )
+    assertEquals(200, call("POST", "/sync", deletion, token, "3").status)
+    assertEquals(
+      0,
+      call("GET", "/coach/journal", token = token, version = "3").body!!["entries"].size(),
+    )
+    assertEquals(409, call("POST", "/coach/journal", request, token, "3").status)
+    assertEquals(
+      0,
+      db.queryForObject(
+        "SELECT count(*) FROM coach_journal WHERE payload IS NOT NULL",
+        Int::class.java,
+      ),
+    )
+  }
+
   data class Reply(val status: Int, val body: JsonNode?)
 
-  private fun call(method: String, path: String, body: Any? = null, token: String? = null): Reply {
+  private fun call(
+    method: String,
+    path: String,
+    body: Any? = null,
+    token: String? = null,
+    version: String? = null,
+  ): Reply {
     val builder =
       HttpRequest.newBuilder(URI("http://localhost:$port/v1$path"))
         .header("Content-Type", "application/json")
     if (token != null) builder.header("Authorization", "Bearer $token")
+    if (version != null) builder.header("X-Gym-Sync-Version", version)
     val response =
       client.send(
         builder
@@ -910,7 +1178,7 @@ class BackendIntegrationTest {
 
   @Test
   fun `Liquibase has applied auth sync and admin changesets`() {
-    assertEquals(6, db.queryForObject("SELECT count(*) FROM databasechangelog", Int::class.java))
+    assertEquals(7, db.queryForObject("SELECT count(*) FROM databasechangelog", Int::class.java))
   }
 
   @Test
