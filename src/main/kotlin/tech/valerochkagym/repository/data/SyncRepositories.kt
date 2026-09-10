@@ -14,6 +14,10 @@ import tech.valerochkagym.repository.model.RecordId
 interface HeadRepository : JpaRepository<HeadEntity, UUID> {
   @Lock(LockModeType.PESSIMISTIC_WRITE)
   @Query("select h from HeadEntity h where h.userId = :user")
+  fun writeLockOrNull(user: UUID): HeadEntity?
+
+  @Lock(LockModeType.PESSIMISTIC_WRITE)
+  @Query("select h from HeadEntity h where h.userId = :user")
   fun writeLock(user: UUID): HeadEntity
 
   @Lock(LockModeType.PESSIMISTIC_READ)

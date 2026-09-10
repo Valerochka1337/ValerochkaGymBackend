@@ -454,6 +454,17 @@ class BackendIntegrationTest {
       assertEquals(0, result.exitCode, result.stderr)
       return result.stdout.trim()
     }
+    fun liquibaseHistory(database: String): String =
+      command(
+        "psql",
+        "-U",
+        postgres.username,
+        "-d",
+        database,
+        "-Atc",
+        "SELECT row_to_json(history)::text FROM databasechangelog history ORDER BY orderexecuted",
+      )
+    val sourceHistory = liquibaseHistory(postgres.databaseName)
     command(
       "pg_dump",
       "-U",
@@ -501,7 +512,7 @@ class BackendIntegrationTest {
         ),
       )
       assertEquals(
-        "10",
+        "11",
         command(
           "psql",
           "-U",
@@ -512,6 +523,7 @@ class BackendIntegrationTest {
           "SELECT count(*) FROM databasechangelog",
         ),
       )
+      assertEquals(sourceHistory, liquibaseHistory("gym_restore_test"))
     } finally {
       command("dropdb", "-U", postgres.username, "gym_restore_test")
     }
@@ -2272,7 +2284,7 @@ class BackendIntegrationTest {
 
   @Test
   fun `Liquibase has applied auth sync and admin changesets`() {
-    assertEquals(10, db.queryForObject("SELECT count(*) FROM databasechangelog", Int::class.java))
+    assertEquals(11, db.queryForObject("SELECT count(*) FROM databasechangelog", Int::class.java))
   }
 
   @Test
