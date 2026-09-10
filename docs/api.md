@@ -243,3 +243,43 @@ syncId, ownerId и измерений. Unknown не заполняется до�
 После provider call выполняется прежняя повторная проверка ревизии и сессии.
 Контракт: `src/test/resources/basic-profile-sync-contract.json`, SHA-256
 `1bec288ad8d841efaf645af13ac5ea1cbe2b53c841846589c8101cfe3f524ed6`.
+
+## Ручные медицинские записи: health-ledger-v1
+
+Выделенные `/v1/health-ledger/*` и `/v1/health-ai-disclosure` требуют Bearer и
+`X-Gym-Capabilities: health-ledger-v1` до чтения тела. Без capability —
+`426 capability_required`. Записи `health_report`, `health_observation`,
+`health_restriction` не входят в generic sync/records и не копируют `measurement`.
+Точные формы, пределы строк, decimal/date правила и векторы фиксированы в
+`src/test/resources/manual-health-contract.json`.
+
+- `POST /v1/health-ledger/operations`: `{operationId,versions,heads}`; максимум 5MiB
+  UTF-8,500 версий и500 head intents. Неизменяемые версии получают `serverSequence`
+  и отдельный `healthRevision`; APPLIED head CAS также получает `healthRevision`.
+  STALE сохраняет принятую версию и возвращает текущую голову. Exact operation
+  replay возвращает сохранённые байты результата; иные байты того же operationId
+  дают 409 `health_operation_reused`. Неравная immutable version — 409
+  `health_version_collision`. Некорректные ссылки — 400 `health_reference_invalid`.
+- `GET /v1/health-ledger/snapshot?limit=1..500&pageToken=...` и
+  `GET /v1/health-ledger/changes?after=...&limit=1..500&pageToken=...`: общий поток
+  immutable version/head events ограничен watermarkH; snapshot использует heads
+  из истории наH. Только финальная страница выдаёт `commitCursor`. Page tokens
+  живут 24часа; committed cursors не имеют TTL пока история сохранена. Неверный
+  владелец, purpose, подпись, утраченное состояние/ключ — 410 `health_cursor_expired`.
+- `GET /v1/health-ai-disclosure`: отдельная квитанция; отсутствующая —
+  `{revision:0,noticeVersion:0,enabled:false,recordedAtEpochMs:0}`.
+- `POST /v1/health-ai-disclosure`: `{operationId,baseRevision,noticeVersion,enabled}`,
+  максимум 4096байт, raw-byte replay. Stale base — 409 `consent_revision_conflict`;
+  changed-byte reuse — 409 `consent_operation_reused`.
+
+InBody требует `X-Health-AI-Disclosure-Revision` текущей включённой квитанции
+noticeVersion 1 до чтения изображения. Проверки повторяются перед/после provider
+и на ASYNC dispatch; отзыв даёт 403 `health_ai_consent_required` с отбрасыванием
+результата. DB locks не удерживаются через provider HTTP. Exercise AI не зависит
+от этого согласия.
+
+Health storage limits: `gym.health.max-bytes=209715200` и
+`gym.health.max-versions=100000` по умолчанию. Считаются логические UTF-8 bytes
+версий, событий/истории и raw/result operations, без SQL/index overhead.
+Проверка всей операции атомарна до выделения событий; exact replay бесплатен.
+Превышение — 409 `health_account_limit`. Это storage quota, не AI usage limit.

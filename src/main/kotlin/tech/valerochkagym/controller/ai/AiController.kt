@@ -23,7 +23,10 @@ class AiController(private val service: AiActionService) {
   fun inbody(
     @AuthenticationPrincipal identity: Identity,
     @RequestBody request: InBodyDraftRequest,
-  ): DeferredResult<AiDraftResponse> = async { service.inbody(identity, request) }
+    @RequestHeader("X-Health-AI-Disclosure-Revision") disclosureRevision: Long,
+  ): DeferredResult<AiDraftResponse> = async {
+    service.inbody(identity, request, disclosureRevision)
+  }
 
   private fun async(action: () -> AiDraftResponse): DeferredResult<AiDraftResponse> {
     val result = DeferredResult<AiDraftResponse>(45000)

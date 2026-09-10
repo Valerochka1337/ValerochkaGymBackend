@@ -29,3 +29,6 @@ databaseChangeLog:
   - include:
       file: 010-training-proposals.sql
       relativeToChangelogFile: true
+  - include:
+      file: 011-manual-health.sql
+      relativeToChangelogFile: true

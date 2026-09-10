@@ -16,6 +16,7 @@ import tech.valerochkagym.service.auth.AuthService
 
 class BearerFilter(
   private val auth: AuthService,
+  private val healthDisclosure: tech.valerochkagym.service.health.HealthAiDisclosureService,
   private val limits: RateLimiter,
   private val catalog: tech.valerochkagym.repository.catalog.CatalogStateRepository,
 ) : OncePerRequestFilter() {
@@ -46,6 +47,28 @@ class BearerFilter(
           request.getHeader("X-Gym-Sync-Version") !in setOf("2", "3")
       )
         throw ApiException(426, "client_update_required", "Обновите приложение для общего каталога")
+      val identity =
+        SecurityContextHolder.getContext().authentication?.principal
+          as? tech.valerochkagym.service.model.Identity
+      if (
+        request.requestURI.startsWith("/v1/health-ledger") ||
+          request.requestURI == "/v1/health-ai-disclosure"
+      ) {
+        if (identity == null) unauthorized()
+        val capable =
+          request.getHeader("X-Gym-Capabilities")?.split(',')?.any {
+            it.trim() == "health-ledger-v1"
+          } == true
+        response.setHeader("X-Gym-Capabilities", if (capable) "health-ledger-v1" else "")
+        if (!capable) throw ApiException(426, "capability_required", "Требуется health-ledger-v1")
+      }
+      if (request.requestURI == "/v1/ai/inbody-drafts") {
+        if (identity == null) unauthorized()
+        healthDisclosure.requireEnabled(
+          identity,
+          request.getHeader("X-Health-AI-Disclosure-Revision")?.toLongOrNull(),
+        )
+      }
       val bounded =
         object : HttpServletRequestWrapper(request) {
           override fun getInputStream(): ServletInputStream {

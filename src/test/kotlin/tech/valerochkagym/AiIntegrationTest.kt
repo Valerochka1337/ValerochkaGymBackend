@@ -111,11 +111,20 @@ class AiIntegrationTest {
     return Owner(id, session, token)
   }
 
+  private fun enableDisclosure(a: Owner) {
+    db.update("INSERT INTO health_owner_state(owner_id) VALUES (?) ON CONFLICT DO NOTHING", a.id)
+    db.update(
+      "INSERT INTO health_ai_disclosures VALUES (?,1,1,true,1) ON CONFLICT(owner_id) DO UPDATE SET enabled=true",
+      a.id,
+    )
+  }
+
   fun call(path: String, owner: Owner? = null, body: Any? = null): HttpResponse<String> {
     val request =
       HttpRequest.newBuilder(URI("http://localhost:$port$path"))
         .header("Content-Type", "application/json")
     owner?.let { request.header("Authorization", "Bearer ${it.token}") }
+    if (path == "/v1/ai/inbody-drafts") request.header("X-Health-AI-Disclosure-Revision", "1")
     request.method(
       if (body == null) "GET" else "POST",
       body?.let { HttpRequest.BodyPublishers.ofString(json.writeValueAsString(it)) }
@@ -216,6 +225,7 @@ class AiIntegrationTest {
   @Test
   fun `shared action admission precedes image and context work and releases on failure and cancellation`() {
     val a = owner()
+    enableDisclosure(a)
     val identity = Identity(a.id, a.session, "$a@example.com")
     fun exercise(revision: Long = 0) =
       ExerciseDraftRequest(UUID.randomUUID().toString(), revision, 0, "x")
@@ -246,7 +256,7 @@ class AiIntegrationTest {
       // Invalid image and stale context would fail differently if either expensive path ran.
       assertEquals(
         "ai_busy",
-        assertThrows(ApiException::class.java) { actions.inbody(identity, invalidImage()) }.code,
+        assertThrows(ApiException::class.java) { actions.inbody(identity, invalidImage(), 1) }.code,
       )
       assertEquals(
         "ai_busy",
@@ -258,7 +268,8 @@ class AiIntegrationTest {
       repeat(3) {
         assertEquals(
           "invalid_image",
-          assertThrows(ApiException::class.java) { actions.inbody(identity, invalidImage()) }.code,
+          assertThrows(ApiException::class.java) { actions.inbody(identity, invalidImage(), 1) }
+            .code,
         )
         assertThrows(ApiException::class.java) { actions.exercise(identity, exercise(1)) }
       }
@@ -395,6 +406,7 @@ class AiIntegrationTest {
   @Test
   fun `inbody keeps nullable draft fields and image validation is local`() {
     val a = owner()
+    enableDisclosure(a)
     addProfile(a)
     val bytes =
       ByteArrayOutputStream()
@@ -447,6 +459,17 @@ class AiIntegrationTest {
         )
         .statusCode(),
     )
+    val originalHandler = provider.handler
+    provider.handler = { input ->
+      db.update("UPDATE health_ai_disclosures SET revision=2,enabled=false WHERE owner_id=?", a.id)
+      originalHandler(input)
+    }
+    val revoked = call("/v1/ai/inbody-drafts", a, request)
+    assertEquals(403, revoked.statusCode(), revoked.body())
+    assertEquals("health_ai_consent_required", json.readTree(revoked.body())["code"].asString())
+    val callsBefore = provider.calls
+    assertEquals(403, call("/v1/ai/inbody-drafts", a, request).statusCode())
+    assertEquals(callsBefore, provider.calls)
     assertEquals(1, db.queryForObject("SELECT count(*) FROM records", Int::class.java))
     assertEquals(
       0,

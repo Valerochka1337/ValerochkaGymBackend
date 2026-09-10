@@ -11,6 +11,7 @@ import tools.jackson.databind.ObjectMapper
 @Service
 class AiActionService(
   private val provider: AiProvider,
+  private val disclosure: tech.valerochkagym.service.health.HealthAiDisclosureService,
   private val contexts: AiContextReader,
   private val validator: AiDraftValidator,
   private val images: AiImageInput,
@@ -52,8 +53,13 @@ class AiActionService(
     }
   }
 
-  fun inbody(identity: Identity, request: InBodyDraftRequest): AiDraftResponse {
+  fun inbody(
+    identity: Identity,
+    request: InBodyDraftRequest,
+    disclosureRevision: Long? = null,
+  ): AiDraftResponse {
     check(request.requestId, request.expectedRevision, request.expectedCatalogRevision)
+    disclosure.requireEnabled(identity, disclosureRevision)
     return admitted {
       images.validate(request.image)
       run(
@@ -64,6 +70,7 @@ class AiActionService(
         true,
         "",
         request.image.base64,
+        disclosureRevision,
       )
     }
   }
@@ -85,6 +92,7 @@ class AiActionService(
     vision: Boolean,
     description: String,
     image: String?,
+    disclosureRevision: Long? = null,
   ): AiDraftResponse {
     if (!provider.available) throw aiError("ai_unavailable")
     val captured = contexts.capture(identity, revision, catalogRevision, !vision)
@@ -105,10 +113,12 @@ class AiActionService(
         )
     if (context.toByteArray(Charsets.UTF_8).size > 1024 * 1024)
       throw aiError("ai_context_too_large")
+    if (vision) disclosure.requireEnabled(identity, disclosureRevision)
     val raw =
       provider.generate(
         AiProviderInput(vision, instruction, context, validator.schema(vision), image)
       )
+    if (vision) disclosure.requireEnabled(identity, disclosureRevision)
     if (Thread.currentThread().isInterrupted) throw aiError("ai_timeout")
     val result = validator.validate(raw, vision, captured.allowedIds)
     contexts.capture(identity, revision, catalogRevision, false)

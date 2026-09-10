@@ -17,6 +17,7 @@ class Security {
   fun filterChain(
     http: HttpSecurity,
     auth: AuthService,
+    healthDisclosure: tech.valerochkagym.service.health.HealthAiDisclosureService,
     limits: RateLimiter,
     catalog: tech.valerochkagym.repository.catalog.CatalogStateRepository,
   ): SecurityFilterChain =
@@ -44,7 +45,7 @@ class Security {
         }
       }
       .addFilterBefore(
-        BearerFilter(auth, limits, catalog),
+        BearerFilter(auth, healthDisclosure, limits, catalog),
         UsernamePasswordAuthenticationFilter::class.java,
       )
       .build()

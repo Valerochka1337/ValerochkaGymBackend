@@ -512,7 +512,7 @@ class BackendIntegrationTest {
         ),
       )
       assertEquals(
-        "11",
+        "12",
         command(
           "psql",
           "-U",
@@ -2284,7 +2284,7 @@ class BackendIntegrationTest {
 
   @Test
   fun `Liquibase has applied auth sync and admin changesets`() {
-    assertEquals(11, db.queryForObject("SELECT count(*) FROM databasechangelog", Int::class.java))
+    assertEquals(12, db.queryForObject("SELECT count(*) FROM databasechangelog", Int::class.java))
   }
 
   @Test
