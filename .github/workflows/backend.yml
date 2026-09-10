@@ -4,6 +4,12 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      deploy_production:
+        description: 'Deploy the tested selected branch to production'
+        type: boolean
+        default: false
+        required: true
 permissions:
   contents: read
 concurrency:
@@ -87,7 +93,11 @@ jobs:
           retention-days: 7
   publish:
     needs: [changes, verify]
-    if: github.ref == 'refs/heads/main' && needs.changes.outputs.code == 'true'
+    if: >-
+      needs.changes.outputs.code == 'true' &&
+      ((github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+       (github.event_name == 'workflow_dispatch' && inputs.deploy_production &&
+        (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/feat/calendar-ai')))
     runs-on: ubuntu-latest
     permissions:
       contents: read
