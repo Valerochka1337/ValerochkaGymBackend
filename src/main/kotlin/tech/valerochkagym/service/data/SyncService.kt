@@ -48,22 +48,34 @@ class SyncService(
       Record(it.kind, it.id, it.revision, it.deleted, it.payload?.let(json::readTree))
     }
 
-  fun snapshot(user: UUID, version: String? = "2", calendarPlans: Boolean = false): Snapshot =
+  fun snapshot(
+    user: UUID,
+    version: String? = "2",
+    capabilities: Set<String> = emptySet(),
+  ): Snapshot =
     tx.execute {
       requireVersion(catalog.readLock(), version)
       val revision = head(user, false)
       requireAccountVersion(user, version)
-      Snapshot(revision, records(user).filter { visible(it.kind, calendarPlans) })
+      Snapshot(
+        revision,
+        records(user).filter { visible(it.kind, capabilities) }.map { project(it, capabilities) },
+      )
     }!!
 
   fun push(
     user: UUID,
     incoming: PushRequest,
     version: String? = "2",
-    calendarPlans: Boolean = false,
+    capabilities: Set<String> = emptySet(),
   ): PushResult {
-    if (!calendarPlans && incoming.changes.any { it.kind in RecordValidator.calendarKinds })
+    if (
+      "calendar-plans" !in capabilities &&
+        incoming.changes.any { it.kind in RecordValidator.calendarKinds }
+    )
       throw ApiException(426, "capability_required", "Требуется возможность calendar-plans")
+    if ("exercise-hint" !in capabilities && incoming.changes.any { it.kind == "exercise_hint" })
+      throw ApiException(426, "capability_required", "Требуется возможность exercise-hint")
     val request =
       incoming.copy(
         changes =
@@ -118,13 +130,23 @@ class SyncService(
         val key = RecordKey(change.kind, change.id)
         if (change.kind !in RecordValidator.kinds || change.baseRevision < 0)
           bad("Некорректный тип или версия объекта")
-        if (common.keys.any { it.id == change.id })
+        if (change.kind != "exercise_hint" && common.keys.any { it.id == change.id })
           throw ApiException(
             403,
             "standard_read_only",
             "Создайте личную копию стандартного объекта",
           )
         val old = existing[key]
+        if (
+          change.kind == "workout" &&
+            "annotated-workout-writes" !in capabilities &&
+            (hasSetNotes(old?.payload) || hasSetNotes(change.payload))
+        )
+          throw ApiException(
+            409,
+            "annotated_workout_requires_capability",
+            "Требуется возможность annotated-workout-writes",
+          )
         if (change.kind == "calendar_rule" && !change.deleted && old?.deleted == true)
           bad("Удалённое правило требует нового UUID")
         if (change.kind == "workout" && !change.deleted) {
@@ -168,6 +190,20 @@ class SyncService(
             16L * 1024 * 1024
       )
         throw ApiException(409, "account_limit", "Превышено количество объектов аккаунта")
+      // Hints may outlive their exercise. Only a new or changed live hint selects a reference.
+      request.changes
+        .filter { it.kind == "exercise_hint" && !it.deleted }
+        .forEach { change ->
+          val key = RecordKey(change.kind, change.id)
+          if (before[key]?.deleted != false || before[key]?.payload != change.payload) {
+            val exerciseKey = RecordKey("exercise", change.id)
+            if (
+              (existing + common)[exerciseKey]?.deleted != false ||
+                commonRows.any { it.kind == "exercise" && it.id == change.id && it.archived }
+            )
+              bad("Подсказка требует доступное упражнение")
+          }
+        }
       validator.references(
         existing + common,
         request.changes.map { RecordKey(it.kind, it.id) }.toSet(),
@@ -211,7 +247,7 @@ class SyncService(
     cursor: String?,
     limit: Int,
     version: String? = "2",
-    calendarPlans: Boolean = false,
+    capabilities: Set<String> = emptySet(),
   ): ChangesPage {
     if (after < 0 || limit !in 1..1000) bad("Некорректная пагинация")
     return tx.execute {
@@ -227,13 +263,14 @@ class SyncService(
         bad("Некорректный курсор")
       val rows =
         records(user)
-          .filter { visible(it.kind, calendarPlans) }
+          .filter { visible(it.kind, capabilities) }
           .filter {
             it.revision > after &&
               (it.revision > rev ||
                 it.revision == rev &&
                   (it.kind > kind || it.kind == kind && it.id.toString() > id.toString()))
           }
+          .map { project(it, capabilities) }
           .sortedWith(
             compareBy<Record> { it.revision }.thenBy { it.kind }.thenBy { it.id.toString() }
           )
@@ -247,8 +284,30 @@ class SyncService(
     }!!
   }
 
-  private fun visible(kind: String, calendarPlans: Boolean) =
-    calendarPlans || kind !in RecordValidator.calendarKinds
+  private fun visible(kind: String, capabilities: Set<String>) =
+    ("calendar-plans" in capabilities || kind !in RecordValidator.calendarKinds) &&
+      ("exercise-hint" in capabilities || kind != "exercise_hint")
+
+  private fun hasSetNotes(payload: tools.jackson.databind.JsonNode?): Boolean =
+    payload?.get("exercises")?.any { section ->
+      section.get("sets")?.any {
+        it.get("note")?.let { note -> note.isString && note.asString().isNotBlank() } == true
+      } == true
+    } == true
+
+  private fun project(record: Record, capabilities: Set<String>): Record {
+    if (
+      record.kind != "workout" ||
+        record.payload == null ||
+        "annotated-workout-writes" in capabilities
+    )
+      return record
+    val payload = record.payload.deepCopy()
+    payload.get("exercises")?.forEach { section ->
+      section.get("sets")?.forEach { (it as tools.jackson.databind.node.ObjectNode).remove("note") }
+    }
+    return record.copy(payload = payload)
+  }
 
   private fun requireAccountVersion(user: UUID, version: String?) {
     if (heads.readLock(user).minSyncVersion >= 3 && version != "3")

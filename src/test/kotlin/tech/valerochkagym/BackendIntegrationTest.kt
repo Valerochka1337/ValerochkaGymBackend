@@ -501,7 +501,7 @@ class BackendIntegrationTest {
         ),
       )
       assertEquals(
-        "8",
+        "9",
         command(
           "psql",
           "-U",
@@ -1421,6 +1421,382 @@ class BackendIntegrationTest {
     assertEquals("calendar-plans", json.readTree(bytes)["capability"].asString())
   }
 
+  private val notesCapabilities = "calendar-plans,annotated-workout-writes,exercise-hint"
+
+  private fun notesPush(
+    token: String,
+    changes: List<Any>,
+    operation: String = UUID.randomUUID().toString(),
+    capabilities: String? = notesCapabilities,
+  ) =
+    call(
+      "POST",
+      "/sync",
+      mapOf("operationId" to operation, "changes" to changes),
+      token,
+      capabilities = capabilities,
+    )
+
+  private fun notedWorkout(note: String = "Держать спину"): JsonNode {
+    val fixture = json.readTree(javaClass.getResourceAsStream("/android-snapshot.json")!!)
+    val payload = fixture["records"][1]["payload"].deepCopy()
+    (payload["exercises"][0]["sets"][0] as tools.jackson.databind.node.ObjectNode).put("note", note)
+    (payload as tools.jackson.databind.node.ObjectNode).put("note", "Старая заметка тренировки")
+    return payload
+  }
+
+  @Test
+  fun `notes project only set annotations on every legacy read and protect atomic writes`() {
+    val token = account()["accessToken"].asString()
+    val exercise = "00000000-0000-0000-0000-000000000001"
+    val workout = "00000000-0000-0000-0000-000000000002"
+    val payload = notedWorkout()
+    assertEquals(
+      200,
+      notesPush(
+          token,
+          listOf(change(exercise), change(workout, payload = payload, kind = "workout")),
+        )
+        .status,
+    )
+    for (caps in listOf(null, "calendar-plans")) {
+      for (path in
+        listOf(
+          "/sync",
+          "/sync/changes?limit=100",
+          "/records/workout",
+          "/records/workout/$workout",
+        )) {
+        val response = call("GET", path, token = token, capabilities = caps)
+        assertEquals(200, response.status)
+        val records =
+          if (path == "/records/workout/$workout") listOf(response.body!!)
+          else if (path == "/records/workout") response.body!!.toList()
+          else response.body!!["records"].toList()
+        val projected = records.first { it["kind"].asString() == "workout" }["payload"]
+        val expected = payload.deepCopy()
+        (expected["exercises"][0]["sets"][0] as tools.jackson.databind.node.ObjectNode).remove(
+          "note"
+        )
+        assertEquals(expected, projected, path)
+      }
+    }
+    assertEquals(
+      payload,
+      call("GET", "/records/workout/$workout", token = token, capabilities = notesCapabilities)
+        .body!!["payload"],
+    )
+    val without = payload.deepCopy()
+    (without["exercises"][0]["sets"][0] as tools.jackson.databind.node.ObjectNode).remove("note")
+    for (next in listOf(without, notedWorkout("Новая непустая заметка"), null)) {
+      val operation = UUID.randomUUID().toString()
+      val changes = listOf(change(workout, 1, next, "workout"), change())
+      val rejected = notesPush(token, changes, operation, null)
+      assertEquals(409, rejected.status, rejected.toString())
+      assertEquals("annotated_workout_requires_capability", rejected.body!!["code"].asString())
+      assertEquals(1, db.queryForObject("SELECT count(*) FROM sync_operations", Int::class.java))
+      assertEquals(1L, call("GET", "/sync", token = token).body!!["revision"].asLong())
+      assertEquals(2, db.queryForObject("SELECT count(*) FROM records", Int::class.java))
+    }
+    assertEquals(200, push(token, listOf(change())).status)
+    val op = UUID.randomUUID().toString()
+    val deletion = listOf(change(workout, 1, null, "workout"))
+    val accepted = notesPush(token, deletion, op)
+    assertEquals(200, accepted.status)
+    assertEquals(accepted.body, notesPush(token, deletion, op).body)
+
+    val emptyOwner = account()["accessToken"].asString()
+    assertEquals(
+      200,
+      notesPush(
+          emptyOwner,
+          listOf(change(exercise), change(workout, payload = notedWorkout(""), kind = "workout")),
+        )
+        .status,
+    )
+    val ledgerBefore = db.queryForObject("SELECT count(*) FROM sync_operations", Int::class.java)
+    val emptySnapshot =
+      call("GET", "/sync", token = emptyOwner, capabilities = notesCapabilities).body
+    val rejectedNewNote =
+      notesPush(
+        emptyOwner,
+        listOf(change(workout, 1, notedWorkout("Первая заметка"), "workout")),
+        capabilities = null,
+      )
+    assertEquals(409, rejectedNewNote.status)
+    assertEquals("annotated_workout_requires_capability", rejectedNewNote.body!!["code"].asString())
+    assertEquals(
+      ledgerBefore,
+      db.queryForObject("SELECT count(*) FROM sync_operations", Int::class.java),
+    )
+    assertEquals(
+      emptySnapshot,
+      call("GET", "/sync", token = emptyOwner, capabilities = notesCapabilities).body,
+    )
+  }
+
+  @Test
+  fun `notes hints use capability intersection owner isolation and filtered cursors`() {
+    val token = account()["accessToken"].asString()
+    val other = account()["accessToken"].asString()
+    val ex = UUID.randomUUID().toString()
+    val hint = mapOf("text" to "Личная подсказка", "updatedAt" to 0)
+    val op = UUID.randomUUID().toString()
+    val mixed = listOf(change(ex), change(ex, payload = hint, kind = "exercise_hint"))
+    assertEquals(426, notesPush(token, mixed, op, "calendar-plans").status)
+    assertEquals(0, db.queryForObject("SELECT count(*) FROM sync_operations", Int::class.java))
+    val accepted = notesPush(token, mixed, op)
+    assertEquals(200, accepted.status, accepted.toString())
+    assertEquals(accepted.body, notesPush(token, mixed, op).body)
+    assertEquals(
+      404,
+      call("GET", "/records/exercise_hint/$ex", token = other, capabilities = notesCapabilities)
+        .status,
+    )
+    assertEquals(404, call("GET", "/records/exercise_hint/$ex", token = token).status)
+    assertEquals(0, call("GET", "/records/exercise_hint", token = token).body!!.size())
+    val page = call("GET", "/sync/changes?limit=1", token = token).body!!
+    assertEquals(1, page["records"].size())
+    assertTrue(page["nextCursor"].isNull)
+    assertEquals("exercise", page["records"][0]["kind"].asString())
+    val visible =
+      call(
+        "GET",
+        "/sync/changes?limit=1",
+        token = token,
+        capabilities = "exercise-hint, unknown, exercise-hint",
+      )
+    assertEquals("exercise-hint", visible.capabilities)
+    val cursor = visible.body!!["nextCursor"].asString()
+    assertEquals(
+      "exercise_hint",
+      call(
+          "GET",
+          "/sync/changes?limit=1&cursor=$cursor",
+          token = token,
+          capabilities = notesCapabilities,
+        )
+        .body!!["records"][0]["kind"]
+        .asString(),
+    )
+    val beforeConflict = call("GET", "/sync", token = token, capabilities = notesCapabilities).body
+    val ledgerBeforeConflict =
+      db.queryForObject("SELECT count(*) FROM sync_operations", Int::class.java)
+    val staleHint =
+      notesPush(
+        token,
+        listOf(
+          change(ex, 0, hint + ("text" to "Устаревшая правка"), "exercise_hint"),
+          change(ex, 1, exercise("Не должно сохраниться")),
+        ),
+      )
+    assertEquals(409, staleHint.status)
+    assertEquals("revision_conflict", staleHint.body!!["code"].asString())
+    assertEquals(
+      ledgerBeforeConflict,
+      db.queryForObject("SELECT count(*) FROM sync_operations", Int::class.java),
+    )
+    assertEquals(
+      beforeConflict,
+      call("GET", "/sync", token = token, capabilities = notesCapabilities).body,
+    )
+    assertEquals(200, push(token, listOf(change(ex, 1, null))).status)
+    assertEquals(
+      hint["text"],
+      call("GET", "/records/exercise_hint/$ex", token = token, capabilities = notesCapabilities)
+        .body!!["payload"]["text"]
+        .asString(),
+    )
+    assertEquals(
+      400,
+      notesPush(token, listOf(change(ex, 1, hint + ("updatedAt" to 1), "exercise_hint"))).status,
+    )
+    val exerciseBeforeHintDelete =
+      call("GET", "/sync", token = token, capabilities = notesCapabilities)
+        .body!!["records"]
+        .first { it["kind"].asString() == "exercise" }
+    assertEquals(200, notesPush(token, listOf(change(ex, 1, null, "exercise_hint"))).status)
+    for (caps in listOf(null, notesCapabilities)) {
+      assertEquals(
+        404,
+        call("GET", "/records/exercise_hint/$ex", token = token, capabilities = caps).status,
+      )
+      assertEquals(
+        0,
+        call("GET", "/records/exercise_hint", token = token, capabilities = caps).body!!.size(),
+      )
+      val changes =
+        call("GET", "/sync/changes?after=2&limit=1", token = token, capabilities = caps).body!!
+      assertEquals(3L, changes["revision"].asLong())
+      assertTrue(changes["nextCursor"].isNull)
+      val snapshot = call("GET", "/sync", token = token, capabilities = caps).body!!["records"]
+      assertEquals(exerciseBeforeHintDelete, snapshot.first { it["kind"].asString() == "exercise" })
+      if (caps == null) {
+        assertEquals(0, changes["records"].size())
+        assertFalse(snapshot.any { it["kind"].asString() == "exercise_hint" })
+      } else {
+        val tombstone = changes["records"].single()
+        assertEquals("exercise_hint", tombstone["kind"].asString())
+        assertEquals(ex, tombstone["id"].asString())
+        assertTrue(tombstone["deleted"].asBoolean())
+        assertTrue(tombstone["payload"].isNull)
+        assertEquals(tombstone, snapshot.first { it["kind"].asString() == "exercise_hint" })
+      }
+    }
+  }
+
+  @Test
+  fun `notes hints allow standard identity without catalog mutation and reject unavailable references`() {
+    val token = account()["accessToken"].asString()
+    val browser = administrator()
+    val ex = UUID.randomUUID().toString()
+    val path = "/api/standard/exercise/$ex"
+    assertEquals(
+      200,
+      adminCall(
+          "PUT",
+          path,
+          mapOf(
+            "operationId" to UUID.randomUUID(),
+            "baseRevision" to 0,
+            "reason" to "Создать",
+            "payload" to exercise(),
+          ),
+          browser,
+        )
+        .status,
+    )
+    val hint = mapOf("text" to "Моя техника", "updatedAt" to 1)
+    assertEquals(
+      200,
+      notesPush(token, listOf(change(ex, payload = hint, kind = "exercise_hint"))).status,
+    )
+    assertEquals(403, notesPush(token, listOf(change(ex))).status)
+    assertEquals(
+      200,
+      adminCall(
+          "POST",
+          "$path/archive",
+          mapOf("operationId" to UUID.randomUUID(), "baseRevision" to 1, "reason" to "Архив"),
+          browser,
+        )
+        .status,
+    )
+    assertEquals(
+      400,
+      notesPush(token, listOf(change(ex, 1, hint + ("text" to "Правка"), "exercise_hint"))).status,
+    )
+    assertEquals(200, notesPush(token, listOf(change(ex, 1, null, "exercise_hint"))).status)
+    assertEquals(
+      400,
+      notesPush(token, listOf(change(payload = hint, kind = "exercise_hint"))).status,
+    )
+    val ownerEx = UUID.randomUUID().toString()
+    val other = account()["accessToken"].asString()
+    assertEquals(200, push(other, listOf(change(ownerEx))).status)
+    assertEquals(
+      400,
+      notesPush(token, listOf(change(ownerEx, payload = hint, kind = "exercise_hint"))).status,
+    )
+  }
+
+  @Test
+  fun `notes validate Unicode bounds trimmed text canonical hint UUID and frozen fixture`() {
+    val token = account()["accessToken"].asString()
+    val ex = "00000000-0000-0000-0000-000000000001"
+    assertEquals(200, push(token, listOf(change(ex))).status)
+    val emoji = "😀".repeat(2000)
+    assertEquals(
+      200,
+      notesPush(token, listOf(change(payload = notedWorkout(emoji), kind = "workout"))).status,
+    )
+    for (note in listOf("😀".repeat(2001), " trim ")) {
+      assertEquals(
+        400,
+        notesPush(token, listOf(change(payload = notedWorkout(note), kind = "workout"))).status,
+      )
+    }
+    for (text in listOf("", " ", " trim ", "😀".repeat(2001))) {
+      assertEquals(
+        400,
+        notesPush(
+            token,
+            listOf(
+              change(ex, payload = mapOf("text" to text, "updatedAt" to 0), kind = "exercise_hint")
+            ),
+          )
+          .status,
+      )
+    }
+    assertEquals(
+      400,
+      notesPush(
+          token,
+          listOf(
+            change(ex, payload = mapOf("text" to "ok", "updatedAt" to -1), kind = "exercise_hint")
+          ),
+        )
+        .status,
+    )
+    assertEquals(
+      400,
+      notesPush(
+          token,
+          listOf(
+            change(
+              "ABCDEF00-0000-0000-0000-000000000001",
+              payload = mapOf("text" to "ok", "updatedAt" to 0),
+              kind = "exercise_hint",
+            )
+          ),
+        )
+        .status,
+    )
+    assertEquals(
+      200,
+      notesPush(
+          token,
+          listOf(
+            change(ex, payload = mapOf("text" to emoji, "updatedAt" to 0), kind = "exercise_hint")
+          ),
+        )
+        .status,
+    )
+    val legacy = notedWorkout("")
+    (legacy as tools.jackson.databind.node.ObjectNode).put("note", "x".repeat(10000))
+    (legacy["exercises"][0] as tools.jackson.databind.node.ObjectNode).put(
+      "sectionId",
+      UUID.randomUUID().toString(),
+    )
+    (legacy["exercises"][1] as tools.jackson.databind.node.ObjectNode).put(
+      "sectionId",
+      UUID.randomUUID().toString(),
+    )
+    assertEquals(
+      200,
+      notesPush(token, listOf(change(payload = legacy, kind = "workout")), capabilities = null)
+        .status,
+    )
+    for (value in listOf<Any?>(null, 3, true)) {
+      val invalid = notedWorkout()
+      (invalid["exercises"][0]["sets"][0] as tools.jackson.databind.node.ObjectNode).set(
+        "note",
+        json.valueToTree(value),
+      )
+      assertEquals(
+        400,
+        notesPush(token, listOf(change(payload = invalid, kind = "workout"))).status,
+      )
+    }
+    val bytes = javaClass.getResourceAsStream("/workout-notes-sync-contract.json")!!.readAllBytes()
+    assertEquals(
+      "5a98f491bbb658c76e47933b49b50041fe1f1a16618b9cadfcf1befdbd22818b",
+      java.security.MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") {
+        "%02x".format(it)
+      },
+    )
+  }
+
   data class Reply(val status: Int, val body: JsonNode?, val capabilities: String? = null)
 
   private fun call(
@@ -1686,7 +2062,7 @@ class BackendIntegrationTest {
 
   @Test
   fun `Liquibase has applied auth sync and admin changesets`() {
-    assertEquals(8, db.queryForObject("SELECT count(*) FROM databasechangelog", Int::class.java))
+    assertEquals(9, db.queryForObject("SELECT count(*) FROM databasechangelog", Int::class.java))
   }
 
   @Test

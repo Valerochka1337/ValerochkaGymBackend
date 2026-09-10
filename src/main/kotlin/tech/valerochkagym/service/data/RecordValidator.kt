@@ -24,7 +24,8 @@ class RecordValidator(
   companion object {
     val calendarKinds = setOf("calendar_plan", "calendar_rule", "calendar_exception")
     val kinds =
-      setOf("exercise", "gym", "routine", "workout", "measurement", "schedule") + calendarKinds
+      setOf("exercise", "gym", "routine", "workout", "measurement", "schedule", "exercise_hint") +
+        calendarKinds
     val measurementFields =
       setOf(
         "measuredAt",
@@ -108,6 +109,18 @@ class RecordValidator(
     if (!value.isString || value.asString().length > max || (!blank && value.asString().isBlank()))
       bad("Некорректное поле $key")
     return value.asString()
+  }
+
+  private fun annotation(n: JsonNode, key: String, blank: Boolean) {
+    val value = n.get(key) ?: bad("Отсутствует $key")
+    if (!value.isString) bad("Некорректное поле $key")
+    val text = value.asString()
+    if (
+      text != text.trim() ||
+        text.codePointCount(0, text.length) > 2000 ||
+        (!blank && text.isBlank())
+    )
+      bad("Некорректное поле $key")
   }
 
   private fun enum(n: JsonNode, key: String, values: Set<String>) {
@@ -200,7 +213,8 @@ class RecordValidator(
   private fun set(n: JsonNode, completed: Boolean) {
     shape(
       n,
-      if (completed) setFields + setOf("setIndex", "isCompleted", "completedAt") + coachSetFields
+      if (completed)
+        setFields + setOf("setIndex", "isCompleted", "completedAt", "note") + coachSetFields
       else setFields,
     )
     setFields.forEach {
@@ -213,6 +227,7 @@ class RecordValidator(
       )
     }
     if (completed) {
+      if (n.has("note")) annotation(n, "note", true)
       n["syncId"]?.let(::uuid)
       coachSetFields
         .filter { it.startsWith("original") || it.startsWith("target") || it.startsWith("actual") }
@@ -308,6 +323,11 @@ class RecordValidator(
 
   fun validate(kind: String, n: JsonNode) {
     when (kind) {
+      "exercise_hint" -> {
+        shape(n, setOf("text", "updatedAt"))
+        annotation(n, "text", false)
+        number(n, "updatedAt", true, true, max = Long.MAX_VALUE.toDouble())
+      }
       "exercise" -> {
         shape(
           n,
@@ -607,6 +627,7 @@ class RecordValidator(
       node?.takeUnless { it.isNull }?.let { refs.add(RecordKey(kind, uuid(it))) }
     }
     when (r.kind) {
+      "exercise_hint" -> refs.add(RecordKey("exercise", r.id))
       "gym" -> n["exerciseIds"].forEach { add("exercise", it) }
       "routine",
       "workout" -> {

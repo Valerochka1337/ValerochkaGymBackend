@@ -82,11 +82,11 @@ nullable. equipmentRequirementState — KNOWN или UNKNOWN; KNOWN с пуст�
 Клиент передаёт `X-Gym-Capabilities: calendar-plans` для `GET/POST /v1/sync`,
 `GET /v1/sync/changes` и обоих вариантов `GET /v1/records/*`. Заголовок допускает
 список через запятую; сервер возвращает в `X-Gym-Capabilities` только пересечение
-с поддержанными возможностями. Сейчас это `calendar-plans` либо пустое значение.
+с поддержанными возможностями. Поддерживаются `calendar-plans`, `annotated-workout-writes`, `exercise-hint`; ответ содержит только запрошенное пересечение.
 Неизвестные capability игнорируются. Клиент считает отсутствующий/пустой ответ
 отсутствием поддержки и сохраняет неподдерживаемые локальные данные и outbox.
 
-Без принятой capability сервер показывает только прежние шесть kinds: snapshot,
+Без принятых дополнительных capabilities сервер показывает только прежние шесть kinds: snapshot,
 changes (фильтр **до** пагинации и построения курсора), список records и поиск по ID
 одинаково скрывают календарные записи, включая tombstone. Список скрытого kind пуст,
 поиск отдельной скрытой записи возвращает 404. Общая revision остаётся revision
@@ -180,3 +180,30 @@ refusal/tool calls. Connect timeout 5s; response ≤256KiB, весь вызов 
 или стоимости у провайдера. Совместимость images/strict schema зависит от операторской модели.
 [Create Chat Completion](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create),
 [Structured Outputs](https://developers.openai.com/api/docs/guides/structured-outputs).
+
+## Заметки подходов и личные подсказки
+
+`annotated-workout-writes` открывает необязательный `workout.exercises[].sets[].note`:
+строка, уже обрезанная по краям, максимум 2000 Unicode code points. Отсутствие означает
+пустую строку; null и нестроковые значения запрещены. Прежний `workout.note` сохраняет
+лимит 10000 и прежнюю форму. Протокол синхронизации не повышается.
+
+Без capability все GET sync, changes, records list и single удаляют только поле set.note.
+Фильтрация и проекция выполняются до построения курсора. POST без capability с новой
+непустой заметкой или поверх сохранённой непустой заметки (включая tombstone) возвращает
+409 `annotated_workout_requires_capability`; весь пакет откатывается без новой ревизии
+и записи операции. Совместимые ресурсы продолжают синхронизироваться.
+
+`exercise-hint` открывает личный kind `exercise_hint`. Его id — канонический lowercase UUID
+упражнения; payload строго `{text,updatedAt}`: непустой trimmed text до 2000 Unicode code
+points и неотрицательные целые UTC epoch milliseconds. Идентичность подсказки ограничена
+авторизованным владельцем, даже для STANDARD упражнения; каталог не меняется. Новая или
+изменённая живая подсказка требует собственного либо публичного живого неархивного упражнения.
+Уже существующая подсказка сохраняется при последующем удалении упражнения, tombstone разрешён.
+Без capability kind скрыт до пагинации; list пуст, single 404. POST с этим kind без capability
+возвращает 426 `capability_required` до ledger, включая точный повтор.
+
+Клиент хранит принятые capabilities по владельцу. При отсутствии/понижении ответа он
+сбрасывает кэш проекции, сохраняет неподдержанные записи и pending bytes; при первом
+принятии выполняет полный refresh, не продолжает старый курсор. Разрешён точный повтор
+уже отправленной операции; подтверждение соответствует целому отправленному пакету.

@@ -18,9 +18,11 @@ import tech.valerochkagym.service.model.Identity
 @RestController
 @RequestMapping("/v1")
 class DataController(private val sync: SyncService) {
-  private fun accept(raw: String?, response: HttpServletResponse): Boolean {
-    val accepted = raw?.split(",")?.any { it.trim() == "calendar-plans" } == true
-    response.setHeader("X-Gym-Capabilities", if (accepted) "calendar-plans" else "")
+  private fun accept(raw: String?, response: HttpServletResponse): Set<String> {
+    val requested = raw?.split(",")?.map { it.trim() }?.toSet().orEmpty()
+    val accepted =
+      setOf("calendar-plans", "annotated-workout-writes", "exercise-hint").intersect(requested)
+    response.setHeader("X-Gym-Capabilities", accepted.joinToString(","))
     return accepted
   }
 
@@ -32,7 +34,8 @@ class DataController(private val sync: SyncService) {
       [
         Header(
           name = "X-Gym-Capabilities",
-          description = "Accepted capabilities: calendar-plans or empty",
+          description =
+            "Accepted intersection: calendar-plans, annotated-workout-writes, exercise-hint; otherwise empty",
           schema = Schema(type = "string"),
         )
       ],
@@ -53,7 +56,8 @@ class DataController(private val sync: SyncService) {
       [
         Header(
           name = "X-Gym-Capabilities",
-          description = "Accepted capabilities: calendar-plans or empty",
+          description =
+            "Accepted intersection: calendar-plans, annotated-workout-writes, exercise-hint; otherwise empty",
           schema = Schema(type = "string"),
         )
       ],
@@ -75,7 +79,8 @@ class DataController(private val sync: SyncService) {
       [
         Header(
           name = "X-Gym-Capabilities",
-          description = "Accepted capabilities: calendar-plans or empty",
+          description =
+            "Accepted intersection: calendar-plans, annotated-workout-writes, exercise-hint; otherwise empty",
           schema = Schema(type = "string"),
         )
       ],
@@ -99,7 +104,8 @@ class DataController(private val sync: SyncService) {
       [
         Header(
           name = "X-Gym-Capabilities",
-          description = "Accepted capabilities: calendar-plans or empty",
+          description =
+            "Accepted intersection: calendar-plans, annotated-workout-writes, exercise-hint; otherwise empty",
           schema = Schema(type = "string"),
         )
       ],
@@ -132,7 +138,8 @@ class DataController(private val sync: SyncService) {
       [
         Header(
           name = "X-Gym-Capabilities",
-          description = "Accepted capabilities: calendar-plans or empty",
+          description =
+            "Accepted intersection: calendar-plans, annotated-workout-writes, exercise-hint; otherwise empty",
           schema = Schema(type = "string"),
         )
       ],
