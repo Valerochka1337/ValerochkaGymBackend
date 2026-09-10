@@ -67,6 +67,7 @@ class TrainingProposalIntegrationTest {
 
     override fun requireCoachCapability(coachId: UUID, recipientId: UUID) {
       when (mode) {
+        "allow" -> Unit
         "throw" -> error("authority unavailable")
         else -> throw tech.valerochkagym.controller.advice.ApiException(403, "forbidden", "denied")
       }
@@ -81,6 +82,8 @@ class TrainingProposalIntegrationTest {
   @Autowired lateinit var db: JdbcTemplate
   @Autowired lateinit var json: ObjectMapper
   @Autowired lateinit var crypto: Crypto
+  @Autowired
+  lateinit var proposalService: tech.valerochkagym.service.trainingproposal.TrainingProposalService
   @Autowired lateinit var ai: TrainingProposalAiCreator
   @Autowired lateinit var auth: AuthService
   @Autowired lateinit var proposalAuthors: TrainingProposalAuthorSnapshots
@@ -631,13 +634,16 @@ class TrainingProposalIntegrationTest {
   @Test
   fun `coach proposal requires an immutable author snapshot`() {
     val recipient = owner()
+    val coach = owner()
+    val relation = rawRelation(coach, recipient)
     val now = java.sql.Timestamp.from(Instant.now())
     fun insert(author: UUID?) =
       db.update(
-        "INSERT INTO training_proposals(id,recipient_id,author_id,source,status,current_version,created_at,updated_at,expires_at) VALUES (?,?,?,'COACH','PENDING',1,?,?,?)",
+        "INSERT INTO training_proposals(id,recipient_id,author_id,origin_relation_id,source,status,current_version,created_at,updated_at,expires_at) VALUES (?,?,?,?,'COACH','PENDING',1,?,?,?)",
         UUID.randomUUID(),
         recipient.id,
         author,
+        relation,
         now,
         now,
         java.sql.Timestamp.from(now.toInstant().plusSeconds(3600)),
@@ -645,16 +651,32 @@ class TrainingProposalIntegrationTest {
     assertThrows(DataIntegrityViolationException::class.java) { insert(null) }
     assertThrows(DataIntegrityViolationException::class.java) { insert(UUID.randomUUID()) }
     proposalAuthors.bindAuthenticatedCoach(
-      Identity(recipient.id, recipient.session, "${recipient.id}@example.com")
+      Identity(coach.id, coach.session, "${coach.id}@example.com")
     )
-    assertEquals(1, insert(recipient.id))
+    assertEquals(1, insert(coach.id))
   }
 
   @Test
   fun `confirmed coach deletion detaches audit identity and preserves another recipients accepted result`() {
     val coach = owner()
     val recipient = owner()
-    val accepted = proposal(recipient)
+    fakeAuthority.mode = "allow"
+    val relation = rawRelation(coach, recipient)
+    val accepted =
+      proposalService.mutateCoach(
+        Identity(coach.id, coach.session, "${coach.id}@example.com"),
+        relation,
+        null,
+        json.writeValueAsBytes(
+          mapOf(
+            "operationId" to UUID.randomUUID(),
+            "expectedOwnerRevision" to 0,
+            "expectedCatalogRevision" to 0,
+            "draft" to draft(recipient),
+          )
+        ),
+        "CREATE_COACH_PROPOSAL",
+      ) as tech.valerochkagym.controller.model.ProposalResponse
     assertEquals(
       200,
       call(
@@ -668,11 +690,12 @@ class TrainingProposalIntegrationTest {
     )
     val coachIdentity = Identity(coach.id, coach.session, "${coach.id}@example.com")
     proposalAuthors.bindAuthenticatedCoach(coachIdentity)
-    db.update(
-      "UPDATE training_proposals SET source='COACH',author_id=? WHERE id=?",
-      coach.id,
-      accepted.proposalId,
-    )
+    assertThrows(DataIntegrityViolationException::class.java) {
+      db.update(
+        "UPDATE training_proposals SET origin_relation_id=NULL WHERE id=?",
+        accepted.proposalId,
+      )
+    }
     val code = "87654321"
     db.update(
       "INSERT INTO email_challenges(email,purpose,code_hash,expires_at,attempts) VALUES (?,'delete',?,TIMESTAMPTZ '2100-01-01',0)",
@@ -1103,21 +1126,24 @@ class TrainingProposalIntegrationTest {
     proposalAuthors.bindAuthenticatedCoach(
       Identity(coach.id, coach.session, "${coach.id}@example.com")
     )
+    val relation = rawRelation(coach, recipient)
     val id = UUID.randomUUID()
     val now = Instant.now()
     val timestamp = java.sql.Timestamp.from(now)
     db.update(
-      "INSERT INTO training_proposals(id,recipient_id,author_id,source,status,current_version,created_at,updated_at,expires_at) VALUES (?,?,?,'COACH','PENDING',1,?,?,?)",
+      "INSERT INTO training_proposals(id,recipient_id,author_id,origin_relation_id,source,status,current_version,created_at,updated_at,expires_at) VALUES (?,?,?,?,'COACH','PENDING',1,?,?,?)",
       id,
       recipient.id,
       coach.id,
+      relation,
       timestamp,
       timestamp,
       java.sql.Timestamp.from(now.plusSeconds(3600)),
     )
     db.update(
-      "INSERT INTO training_proposal_versions(proposal_id,version,draft,owner_revision,catalog_revision,created_at) VALUES (?,1,?::jsonb,0,0,?)",
+      "INSERT INTO training_proposal_versions(proposal_id,version,origin_relation_id,draft,owner_revision,catalog_revision,created_at) VALUES (?,1,?,?::jsonb,0,0,?)",
       id,
+      relation,
       json.writeValueAsString(draft(recipient)),
       timestamp,
     )
@@ -1138,6 +1164,19 @@ class TrainingProposalIntegrationTest {
         recipient.id,
       ),
     )
+  }
+
+  private fun rawRelation(coach: Owner, recipient: Owner): UUID {
+    val id = UUID.randomUUID()
+    db.update(
+      "INSERT INTO coach_relations(id,coach_id,recipient_id,live_coach_id,live_recipient_id,state,calendar,completed_workouts,created_at) VALUES (?,?,?,?,?,'ACTIVE',true,true,now())",
+      id,
+      coach.id,
+      recipient.id,
+      coach.id,
+      recipient.id,
+    )
+    return id
   }
 
   private fun owner(): Owner {

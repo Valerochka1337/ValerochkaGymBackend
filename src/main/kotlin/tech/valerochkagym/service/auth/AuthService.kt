@@ -269,7 +269,7 @@ class AuthService(
   fun delete(identity: Identity, code: String) {
     val ok =
       tx.execute {
-        proposalCleanup.preflightRecipient(identity.userId)
+        proposalCleanup.preflightAccountDeletion(identity.userId)
         healthCleanup.preflight(identity.userId)
         users.lock(identity.userId)
         healthCleanup.revalidate(identity)

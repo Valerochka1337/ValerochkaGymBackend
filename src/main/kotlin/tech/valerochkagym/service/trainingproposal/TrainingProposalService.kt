@@ -41,6 +41,9 @@ class TrainingProposalService(
   private val json: ObjectMapper,
   private val tx: TransactionTemplate,
   private val clock: Clock,
+  private val relations: tech.valerochkagym.repository.coachrelation.CoachRelationRepositories,
+  private val relationService: tech.valerochkagym.service.coachrelation.CoachRelationsService,
+  private val authors: TrainingProposalAuthorSnapshots,
 ) {
   private sealed interface ApprovalAttempt {
     data class Success(val result: AcceptedResult) : ApprovalAttempt
@@ -57,6 +60,7 @@ class TrainingProposalService(
   ): ProposalResponse {
     val normalized = validator.normalize(draft)
     return tx.execute {
+      relations.guards(identity.userId)
       val catalogHead = catalog.readLock()
       val ownerHead = head(identity.userId)
       if (
@@ -104,6 +108,132 @@ class TrainingProposalService(
         )
       versions.save(version)
       proposal(entity, version)
+    }
+  }
+
+  fun mutateCoach(
+    identity: Identity,
+    relationId: UUID,
+    proposalId: UUID?,
+    raw: ByteArray,
+    action: String,
+  ): Any {
+    val fields =
+      when (action) {
+        "CREATE_COACH_PROPOSAL" ->
+          setOf("operationId", "expectedOwnerRevision", "expectedCatalogRevision", "draft")
+        "REVISE_COACH_PROPOSAL" -> setOf("operationId", "expectedVersion", "draft")
+        else -> setOf("operationId", "expectedVersion")
+      }
+    val request = relationService.body(raw, fields)
+    val operation = relationService.uuid(request, "operationId")
+    val route =
+      when (action) {
+        "CREATE_COACH_PROPOSAL" -> "POST /v1/coach-relations/{relationId}/training-proposals"
+        "REVISE_COACH_PROPOSAL" ->
+          "PUT /v1/coach-relations/{relationId}/training-proposals/{proposalId}"
+        else -> "POST /v1/coach-relations/{relationId}/training-proposals/{proposalId}/revoke"
+      }
+    val tuple = listOfNotNull(relationId, proposalId).joinToString(",")
+    relationService.preliminaryBinding(identity, operation, action, route, raw, tuple)
+    val known =
+      relations.relation(relationId)
+        ?: throw ApiException(404, "relation_not_found", "Связь недоступна")
+    if (known.coachId != identity.userId)
+      throw ApiException(404, "relation_not_found", "Связь недоступна")
+    return tx.execute {
+      relations.guards(known.coachId, known.recipientId)
+      val catalogHead = catalog.readLock()
+      val ownerHead = head(known.recipientId)
+      val relation = relations.relation(relationId, true) ?: hidden()
+      val existing = proposalId?.let { proposals.writeLock(it) ?: hidden() }
+      if (
+        existing != null &&
+          (existing.originRelationId != relationId ||
+            existing.authorId != identity.userId ||
+            existing.recipientId != relation.recipientId ||
+            existing.source != TrainingProposalSource.COACH)
+      )
+        hidden()
+      relations.session(identity)
+      relationService.replay(identity, operation, action, route, tuple, raw)?.let { replay ->
+        if (action == "REVOKE_COACH_PROPOSAL") return@execute replay
+      }
+      requireOriginCapability(identity.userId, known.recipientId, relationId)
+      fun integer(key: String): Long {
+        val value = request[key]
+        if (
+          !value.isIntegralNumber ||
+            !value.canConvertToLong() ||
+            value.asLong() < (if (key == "expectedVersion") 1 else 0)
+        )
+          bad("Некорректная версия")
+        return value.asLong()
+      }
+      relationService.replay(identity, operation, action, route, tuple, raw)?.let {
+        return@execute it
+      }
+      if (existing != null && integer("expectedVersion") != existing.currentVersion.toLong())
+        error("proposal_version_conflict")
+      if (action == "REVOKE_COACH_PROPOSAL") {
+        val entity = existing ?: hidden()
+        if (entity.status != TrainingProposalStatus.PENDING) error("proposal_stale")
+        entity.status = TrainingProposalStatus.REVOKED
+        entity.updatedAt = clock.instant()
+        val result = decision(entity)
+        relationService.save(identity, operation, action, route, tuple, raw, result)
+        return@execute result
+      }
+      // Exact successful create/revise replay still requires live relation; no duplicate version.
+      relationService.replay(identity, operation, action, route, tuple, raw)?.let {
+        return@execute it
+      }
+      if (
+        existing == null &&
+          (integer("expectedOwnerRevision") != ownerHead.revision ||
+            integer("expectedCatalogRevision") != catalogHead.revision)
+      )
+        error("proposal_stale")
+      if (existing != null && existing.status != TrainingProposalStatus.PENDING)
+        error("proposal_stale")
+      val now = clock.instant()
+      val draft = validator.normalize(validator.draft(request["draft"]))
+      validator.validateDraft(draft, now)
+      validateLiveDraft(draft, known.recipientId, now)
+      val author = authors.bindAuthenticatedCoach(identity)
+      val entity =
+        existing
+          ?: proposals.saveAndFlush(
+            TrainingProposalEntity(
+              recipientId = known.recipientId,
+              authorId = author,
+              originRelationId = relationId,
+              source = TrainingProposalSource.COACH,
+              status = TrainingProposalStatus.PENDING,
+              currentVersion = 1,
+              createdAt = now,
+              updatedAt = now,
+              expiresAt = now.plusSeconds(604800),
+            )
+          )
+      if (existing != null) {
+        entity.currentVersion++
+        entity.updatedAt = now
+      }
+      val version =
+        TrainingProposalVersionEntity(
+          proposalId = entity.id,
+          version = entity.currentVersion,
+          originRelationId = relationId,
+          draft = json.writeValueAsString(draft),
+          ownerRevision = ownerHead.revision,
+          catalogRevision = catalogHead.revision,
+          createdAt = now,
+        )
+      versions.saveAndFlush(version)
+      val result = proposal(entity, version)
+      relationService.save(identity, operation, action, route, tuple, raw, result)
+      result
     }
   }
 
@@ -160,24 +290,26 @@ class TrainingProposalService(
   ): AcceptedResult {
     val attempt =
       tx.execute {
-        val catalogHead = catalog.readLock()
         // Read the immutable participant tuple solely to acquire the recipient/relation locks in
         // order. The source/author/recipient tuple and relation capability are checked again
         // after the proposal row lock, before session validation or any state decision.
         val known = proposals.findById(proposalId).orElse(null) ?: hidden()
         if (known.recipientId != identity.userId) hidden()
+        if (known.source == TrainingProposalSource.COACH)
+          relations.guards(known.authorId ?: error("proposal_stale"), known.recipientId)
+        else relations.guards(known.recipientId)
+        val catalogHead = catalog.readLock()
         val ownerHead = head(known.recipientId)
         if (known.source == TrainingProposalSource.COACH)
-          requireCoachCapability(known.authorId ?: error("proposal_stale"), known.recipientId)
+          known.originRelationId?.let { relations.relation(it, true) }
         val proposal = proposals.writeLock(proposalId) ?: hidden()
         if (
           proposal.recipientId != identity.userId ||
             proposal.source != known.source ||
-            proposal.authorId != known.authorId
+            proposal.authorId != known.authorId ||
+            proposal.originRelationId != known.originRelationId
         )
           hidden()
-        if (proposal.source == TrainingProposalSource.COACH)
-          requireCoachCapability(proposal.authorId ?: error("proposal_stale"), proposal.recipientId)
         lockSession(identity)
         val operation =
           operations
@@ -227,6 +359,12 @@ class TrainingProposalService(
           TrainingProposalStatus.STALE -> return@execute ApprovalAttempt.Failure("proposal_stale")
           TrainingProposalStatus.PENDING -> Unit
         }
+        if (proposal.source == TrainingProposalSource.COACH)
+          requireOriginCapability(
+            proposal.authorId ?: error("proposal_stale"),
+            proposal.recipientId,
+            proposal.originRelationId,
+          )
         val now = clock.instant()
         if (!proposal.expiresAt.isAfter(now))
           return@execute stale(proposal, now, "proposal_expired")
@@ -302,6 +440,7 @@ class TrainingProposalService(
 
   fun reject(identity: Identity, proposalId: UUID, request: RejectRequest): DecisionResponse =
     tx.execute {
+      relations.guards(identity.userId)
       catalog.readLock()
       head(identity.userId)
       val proposal = proposals.writeLock(proposalId) ?: hidden()
@@ -319,34 +458,17 @@ class TrainingProposalService(
       decision(proposal)
     }
 
+  /** Legacy PLAN-01 has no operation ID; coach mutations use the relation-scoped ledger routes. */
   fun revoke(identity: Identity, proposalId: UUID, request: RevokeRequest): DecisionResponse =
-    tx.execute {
-      catalog.readLock()
-      val known = proposals.findById(proposalId).orElse(null) ?: hidden()
-      if (known.source != TrainingProposalSource.COACH || known.authorId != identity.userId)
-        throw ApiException(403, "forbidden", "Только автор может отозвать предложение")
-      head(known.recipientId)
-      requireCoachCapability(identity.userId, known.recipientId)
-      val proposal = proposals.writeLock(proposalId) ?: hidden()
-      if (proposal.source != TrainingProposalSource.COACH || proposal.authorId != identity.userId)
-        throw ApiException(403, "forbidden", "Только автор может отозвать предложение")
-      lockSession(identity)
-      if (request.version != proposal.currentVersion) error("proposal_version_conflict")
-      if (proposal.status == TrainingProposalStatus.REVOKED) return@execute decision(proposal)
-      if (proposal.status == TrainingProposalStatus.REJECTED) error("proposal_rejected")
-      if (proposal.status != TrainingProposalStatus.PENDING) error("proposal_stale")
-      proposal.status = TrainingProposalStatus.REVOKED
-      proposal.updatedAt = clock.instant()
-      decision(proposal)
-    }
+    throw ApiException(403, "forbidden", "Используйте отзыв через связь с тренером")
 
-  private fun requireCoachCapability(coachId: UUID, recipientId: UUID) {
+  private fun requireOriginCapability(coach: UUID, recipient: UUID, relation: UUID?) {
     try {
-      authority.requireCoachCapability(coachId, recipientId)
+      authority.requireOriginCapability(coach, recipient, relation)
     } catch (e: ApiException) {
       throw e
     } catch (_: Exception) {
-      throw ApiException(403, "forbidden", "Связь с тренером недоступна")
+      throw ApiException(403, "forbidden", "Связь недоступна")
     }
   }
 

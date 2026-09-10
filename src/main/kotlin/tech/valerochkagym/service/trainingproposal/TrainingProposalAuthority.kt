@@ -7,4 +7,10 @@ import java.util.UUID
  */
 interface TrainingProposalAuthority {
   fun requireCoachCapability(coachId: UUID, recipientId: UUID)
+
+  fun requireOriginCapability(coachId: UUID, recipientId: UUID, relationId: UUID?) {
+    if (relationId == null)
+      throw tech.valerochkagym.controller.advice.ApiException(403, "forbidden", "Связь недоступна")
+    requireCoachCapability(coachId, recipientId)
+  }
 }

@@ -12,9 +12,14 @@ import tech.valerochkagym.service.model.Identity
  * deletion, but never rebound: authorization always comes from the live session and relation.
  */
 @Repository
-class TrainingProposalAuthorSnapshots(private val jdbc: JdbcTemplate) {
+class TrainingProposalAuthorSnapshots(
+  private val jdbc: JdbcTemplate,
+  private val relations: tech.valerochkagym.repository.coachrelation.CoachRelationRepositories,
+) {
   @Transactional
   fun bindAuthenticatedCoach(identity: Identity): UUID {
+    relations.guards(identity.userId)
+    relations.session(identity)
     jdbc.update(
       "INSERT INTO training_proposal_authors(historical_account_id,live_account_id,source) VALUES (?,?, 'COACH') ON CONFLICT (historical_account_id) DO NOTHING",
       identity.userId,
