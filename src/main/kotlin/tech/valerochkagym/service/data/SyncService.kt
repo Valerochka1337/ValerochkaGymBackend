@@ -69,6 +69,21 @@ class SyncService(
     version: String? = "2",
     capabilities: Set<String> = emptySet(),
   ): PushResult {
+    // Profile cannot be deleted, even by callers that have not negotiated the capability.
+    if (incoming.changes.any { it.kind == "profile" && it.deleted })
+      bad("Очистите поля профиля вместо удаления")
+    if ("profile" !in capabilities && incoming.changes.any { it.kind == "profile" })
+      throw ApiException(426, "capability_required", "Требуется возможность profile")
+    incoming.changes
+      .filter { it.kind == "profile" }
+      .forEach {
+        if (
+          it.id != ProfileIdentity.syncId(user.toString()) ||
+            it.payload?.get("syncId")?.asString() != it.id.toString()
+        )
+          bad("Профиль не соответствует владельцу")
+        validator.validate("profile", it.payload ?: bad("Отсутствует профиль"))
+      }
     if (
       "calendar-plans" !in capabilities &&
         incoming.changes.any { it.kind in RecordValidator.calendarKinds }
@@ -286,7 +301,8 @@ class SyncService(
 
   private fun visible(kind: String, capabilities: Set<String>) =
     ("calendar-plans" in capabilities || kind !in RecordValidator.calendarKinds) &&
-      ("exercise-hint" in capabilities || kind != "exercise_hint")
+      ("exercise-hint" in capabilities || kind != "exercise_hint") &&
+      ("profile" in capabilities || kind != "profile")
 
   private fun hasSetNotes(payload: tools.jackson.databind.JsonNode?): Boolean =
     payload?.get("exercises")?.any { section ->

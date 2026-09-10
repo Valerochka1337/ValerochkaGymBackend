@@ -501,7 +501,7 @@ class BackendIntegrationTest {
         ),
       )
       assertEquals(
-        "9",
+        "10",
         command(
           "psql",
           "-U",
@@ -1797,6 +1797,216 @@ class BackendIntegrationTest {
     )
   }
 
+  private fun profilePayload(owner: String): tools.jackson.databind.node.ObjectNode =
+    (json
+        .readTree(javaClass.getResourceAsStream("/basic-profile-sync-contract.json"))[
+          "emptyPayload"]
+        .deepCopy() as tools.jackson.databind.node.ObjectNode)
+      .also {
+        it.put("syncId", tech.valerochkagym.service.data.ProfileIdentity.syncId(owner).toString())
+      }
+
+  private fun profilePush(token: String, changes: List<Any>, capabilities: String? = "profile") =
+    call(
+      "POST",
+      "/sync",
+      mapOf("operationId" to UUID.randomUUID(), "changes" to changes),
+      token,
+      capabilities = capabilities,
+    )
+
+  @Test
+  fun `profile capability filters reads before pagination and preserves singleton through clear and conflicts`() {
+    val owner = account()
+    val token = owner["accessToken"].asString()
+    val payload = profilePayload(owner["userId"].asString())
+    val id = payload["syncId"].asString()
+    val exerciseId = UUID.randomUUID().toString()
+    assertEquals(
+      200,
+      profilePush(
+          token,
+          listOf(change(id, payload = payload, kind = "profile"), change(exerciseId)),
+        )
+        .status,
+    )
+    for (caps in listOf(null, "calendar-plans,annotated-workout-writes,exercise-hint")) {
+      val snapshot = call("GET", "/sync", token = token, capabilities = caps)
+      assertEquals(1, snapshot.body!!["records"].size())
+      val page =
+        call("GET", "/sync/changes?after=0&limit=1", token = token, capabilities = caps).body!!
+      assertEquals("exercise", page["records"][0]["kind"].asString())
+      assertTrue(page["nextCursor"].isNull)
+      assertEquals(
+        0,
+        call("GET", "/records/profile", token = token, capabilities = caps).body!!.size(),
+      )
+      assertEquals(
+        404,
+        call("GET", "/records/profile/$id", token = token, capabilities = caps).status,
+      )
+    }
+    assertEquals(
+      2,
+      call("GET", "/sync", token = token, capabilities = "profile").body!!["records"].size(),
+    )
+    assertEquals(
+      1,
+      call("GET", "/records/profile", token = token, capabilities = "profile").body!!.size(),
+    )
+    assertEquals(
+      200,
+      call("GET", "/records/profile/$id", token = token, capabilities = "profile").status,
+    )
+    val foreign = account()["accessToken"].asString()
+    assertEquals(
+      404,
+      call("GET", "/records/profile/$id", token = foreign, capabilities = "profile").status,
+    )
+    assertEquals(
+      400,
+      profilePush(foreign, listOf(change(id, payload = payload, kind = "profile"))).status,
+    )
+    assertEquals(
+      409,
+      profilePush(token, listOf(change(id, payload = payload, kind = "profile"))).status,
+    )
+    val beforeReject = call("GET", "/sync", token = token, capabilities = "profile").body
+    val ledger = db.queryForObject("SELECT count(*) FROM sync_operations", Int::class.java)
+    for (caps in listOf(null, "profile")) {
+      assertEquals(
+        400,
+        profilePush(
+            token,
+            listOf(change(id, 1, null, "profile"), change(exerciseId, 1, exercise("UNCHANGED"))),
+            caps,
+          )
+          .status,
+      )
+      assertEquals(beforeReject, call("GET", "/sync", token = token, capabilities = "profile").body)
+      assertEquals(
+        ledger,
+        db.queryForObject("SELECT count(*) FROM sync_operations", Int::class.java),
+      )
+    }
+    val firstPage =
+      call("GET", "/sync/changes?after=0&limit=1", token = token, capabilities = "profile")
+    assertEquals("profile", firstPage.capabilities)
+    val cursor = firstPage.body!!["nextCursor"].asString()
+    val secondPage =
+      call(
+          "GET",
+          "/sync/changes?after=0&limit=1&cursor=$cursor",
+          token = token,
+          capabilities = "profile",
+        )
+        .body!!
+    assertEquals("profile", secondPage["records"][0]["kind"].asString())
+    assertTrue(secondPage["nextCursor"].isNull)
+    payload.put("trainingGoal", "STRENGTH")
+    assertEquals(200, profilePush(token, listOf(change(id, 1, payload, "profile"))).status)
+    assertEquals(
+      200,
+      profilePush(
+          token,
+          listOf(change(id, 2, profilePayload(owner["userId"].asString()), "profile")),
+        )
+        .status,
+    )
+    assertEquals(
+      1,
+      db.queryForObject("SELECT count(*) FROM records WHERE kind='profile'", Int::class.java),
+    )
+  }
+
+  @Test
+  fun `profile invalid payload and tombstones leave ledger and revision unchanged`() {
+    val owner = account()
+    val token = owner["accessToken"].asString()
+    val payload = profilePayload(owner["userId"].asString())
+    val id = payload["syncId"].asString()
+    assertEquals(
+      426,
+      profilePush(token, listOf(change(id, payload = payload, kind = "profile")), null).status,
+    )
+    assertEquals(0, db.queryForObject("SELECT count(*) FROM sync_operations", Int::class.java))
+    assertEquals(0, call("GET", "/sync", token = token).body!!["revision"].asInt())
+    for (caps in listOf(null, "profile")) assertEquals(
+      400,
+      profilePush(token, listOf(change(id, payload = null, kind = "profile")), caps).status,
+    )
+    assertEquals(
+      400,
+      profilePush(token, listOf(change(payload = payload, kind = "profile"))).status,
+    )
+    assertEquals(
+      400,
+      profilePush(token, listOf(change(id.uppercase(), payload = payload, kind = "profile"))).status,
+    )
+    val badValues =
+      listOf(
+        "updatedAt" to java.math.BigInteger("9223372036854775808"),
+        "schemaVersion" to 2,
+        "schemaVersion" to null,
+        "updatedAt" to -1,
+        "trainingGoal" to "UNKNOWN",
+        "sex" to "UNKNOWN",
+        "experienceLevel" to "UNKNOWN",
+        "birthDate" to "1899-12-31",
+        "birthDate" to "2100-01-01",
+        "birthDate" to "2001-02-29",
+        "plannedSessionsPerWeek" to 0,
+        "plannedSessionsPerWeek" to 8,
+        "plannedSessionsPerWeek" to 1.5,
+        "preferredSessionDurationMinutes" to 9,
+        "preferredSessionDurationMinutes" to 241,
+        "manualConstraints" to " ",
+        "manualConstraints" to " x",
+        "manualConstraints" to "😀".repeat(2001),
+        "equipmentIds" to listOf("invalid"),
+        "equipmentIds" to listOf("barbell", "adjustable_bench"),
+        "equipmentIds" to listOf("adjustable_bench", "adjustable_bench"),
+        "extra" to true,
+      )
+    for ((key, value) in badValues) {
+      val invalid = payload.deepCopy()
+      invalid.set(key, json.valueToTree(value))
+      val result = profilePush(token, listOf(change(id, payload = invalid, kind = "profile")))
+      assertEquals(400, result.status, "$key=$value: $result")
+    }
+    for (key in payload.properties().map { it.key }) {
+      val invalid = payload.deepCopy()
+      invalid.remove(key)
+      assertEquals(
+        400,
+        profilePush(token, listOf(change(id, payload = invalid, kind = "profile"))).status,
+        key,
+      )
+    }
+    assertEquals(0, db.queryForObject("SELECT count(*) FROM sync_operations", Int::class.java))
+    assertEquals(0, call("GET", "/sync", token = token).body!!["revision"].asInt())
+    payload.put("birthDate", "2000-02-29")
+    payload.put("manualConstraints", "😀".repeat(2000))
+    payload.put("plannedSessionsPerWeek", 7)
+    payload.put("preferredSessionDurationMinutes", 240)
+    assertEquals(
+      200,
+      profilePush(token, listOf(change(id, payload = payload, kind = "profile"))).status,
+    )
+    val fixture =
+      javaClass.getResourceAsStream("/basic-profile-sync-contract.json")!!.readAllBytes()
+    assertEquals(
+      "1bec288ad8d841efaf645af13ac5ea1cbe2b53c841846589c8101cfe3f524ed6",
+      java.security.MessageDigest.getInstance("SHA-256").digest(fixture).joinToString("") {
+        "%02x".format(it)
+      },
+    )
+    assertEquals(
+      "9e27b903-8c27-34a4-82fa-164c43cf1212",
+      tech.valerochkagym.service.data.ProfileIdentity.syncId("owner-7").toString(),
+    )
+  }
+
   data class Reply(val status: Int, val body: JsonNode?, val capabilities: String? = null)
 
   private fun call(
@@ -2062,7 +2272,7 @@ class BackendIntegrationTest {
 
   @Test
   fun `Liquibase has applied auth sync and admin changesets`() {
-    assertEquals(9, db.queryForObject("SELECT count(*) FROM databasechangelog", Int::class.java))
+    assertEquals(10, db.queryForObject("SELECT count(*) FROM databasechangelog", Int::class.java))
   }
 
   @Test
@@ -2243,7 +2453,7 @@ class BackendIntegrationTest {
     db.update("UPDATE users SET is_admin=false WHERE id=?", browser.userId)
     assertEquals(401, adminCall("GET", "/api/users", browser = browser).status)
     db.update("UPDATE users SET is_admin=true WHERE id=?", browser.userId)
-    db.update("UPDATE admin_sessions SET expires_at=now()-interval '1 second'")
+    db.update("UPDATE admin_sessions SET expires_at=TIMESTAMPTZ '2000-01-01 00:00:00+00'")
     assertEquals(401, adminCall("GET", "/api/users", browser = browser).status)
   }
 

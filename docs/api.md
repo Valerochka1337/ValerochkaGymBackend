@@ -82,7 +82,7 @@ nullable. equipmentRequirementState — KNOWN или UNKNOWN; KNOWN с пуст�
 Клиент передаёт `X-Gym-Capabilities: calendar-plans` для `GET/POST /v1/sync`,
 `GET /v1/sync/changes` и обоих вариантов `GET /v1/records/*`. Заголовок допускает
 список через запятую; сервер возвращает в `X-Gym-Capabilities` только пересечение
-с поддержанными возможностями. Поддерживаются `calendar-plans`, `annotated-workout-writes`, `exercise-hint`; ответ содержит только запрошенное пересечение.
+с поддержанными возможностями. Поддерживаются `calendar-plans`, `annotated-workout-writes`, `exercise-hint`, `profile`; ответ содержит только запрошенное пересечение.
 Неизвестные capability игнорируются. Клиент считает отсутствующий/пустой ответ
 отсутствием поддержки и сохраняет неподдерживаемые локальные данные и outbox.
 
@@ -207,3 +207,39 @@ points и неотрицательные целые UTC epoch milliseconds. Ид
 сбрасывает кэш проекции, сохраняет неподдержанные записи и pending bytes; при первом
 принятии выполняет полный refresh, не продолжает старый курсор. Разрешён точный повтор
 уже отправленной операции; подтверждение соответствует целому отправленному пакету.
+
+
+## Базовый профиль — capability `profile`
+
+Один личный `profile` на аутентифицированного владельца. ID и payload `syncId` равны
+`UUID.nameUUIDFromBytes(UTF8("ValerochkaGym.profile.v1:" + authenticatedOwnerUuid))`;
+оба UUID имеют каноническое lowercase написание. Owner задаётся сессией, поле ownerId
+в payload не принимается. Нельзя создать второй profile с альтернативным UUID.
+
+Все 11 полей обязательны: `schemaVersion: 1`, `syncId`, `updatedAt` (неотрицательный int64,
+UTC epoch millis), `trainingGoal`, `sex`, `birthDate`, `experienceLevel`,
+`plannedSessionsPerWeek`, `preferredSessionDurationMinutes`, `manualConstraints`, `equipmentIds`.
+Nullable значения передаются явным JSON null. Goal: STRENGTH/MUSCLE_GAIN/FAT_LOSS/
+GENERAL_FITNESS/ENDURANCE/OTHER; sex: FEMALE/MALE/PREFER_NOT_TO_SAY; experience:
+BEGINNER/INTERMEDIATE/ADVANCED. Дата — реальная ISO YYYY-MM-DD, 1900-01-01…сегодня UTC.
+Частота 1…7, длительность 10…240 минут. Ограничения — trimmed непустая строка до 2000
+Unicode code points или null. Equipment — уникальные, сортированные canonical catalog IDs;
+пустой список означает отсутствие предпочтения.
+
+`deleted=true` всегда возвращает 400 до ledger/revision, включая клиента без capability.
+Очистка — обычное обновление с пустым snapshot. POST profile без capability возвращает
+426 capability_required; чужой/альтернативный ID — 400; stale baseRevision — 409
+revision_conflict. Клиент принимает актуальный серверный singleton при конфликте, не
+создаёт второй профиль. Смешанный пакет атомарен. Все чтения (`/sync`, `/sync/changes`,
+`/records/profile`, `/records/profile/{id}`) скрывают профиль без capability до пагинации;
+отсутствие record в таком ответе не является удалением. При потере согласованной capability
+клиент сохраняет локальный профиль, baseline и outbox до повторного согласования/full refresh.
+Legacy v2/v3, measurements, CAL-01 и заметки сохраняют прежний формат.
+
+Exercise AI читает только сохранённый профиль текущего владельца вместе с каталогом под
+catalog→head locks и проверкой expectedRevision. Provider получает typed nullable профиль
+с возрастом в полных годах, вычисленным сервером на текущую UTC дату, без birthDate,
+syncId, ownerId и измерений. Unknown не заполняется догадками. InBody не получает профиль.
+После provider call выполняется прежняя повторная проверка ревизии и сессии.
+Контракт: `src/test/resources/basic-profile-sync-contract.json`, SHA-256
+`1bec288ad8d841efaf645af13ac5ea1cbe2b53c841846589c8101cfe3f524ed6`.

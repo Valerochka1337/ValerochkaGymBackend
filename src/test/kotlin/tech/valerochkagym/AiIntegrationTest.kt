@@ -270,6 +270,69 @@ class AiIntegrationTest {
     }
   }
 
+  fun addProfile(owner: Owner, constraint: String = "SAVED_TRAINING_CONTEXT") {
+    val id = tech.valerochkagym.service.data.ProfileIdentity.syncId(owner.id.toString())
+    val payload =
+      json
+        .readTree(javaClass.getResourceAsStream("/basic-profile-sync-contract.json"))[
+          "emptyPayload"]
+        .deepCopy() as tools.jackson.databind.node.ObjectNode
+    payload.put("syncId", id.toString())
+    payload.put("birthDate", "2000-02-29")
+    payload.put("trainingGoal", "STRENGTH")
+    payload.put("manualConstraints", constraint)
+    db.update(
+      "INSERT INTO records(user_id,kind,id,revision,deleted,payload) VALUES (?,'profile',?,0,false,?::jsonb)",
+      owner.id,
+      id,
+      payload.toString(),
+    )
+  }
+
+  @Test
+  fun `saved profile provider projection excludes exact date identity measurements and foreign context`() {
+    val a = owner()
+    val b = owner()
+    addProfile(a)
+    addProfile(b, "FOREIGN_PROFILE")
+    db.update(
+      "INSERT INTO records(user_id,kind,id,revision,deleted,payload) VALUES (?,'measurement',?,0,false,'{\"weightKg\":123.456}'::jsonb)",
+      a.id,
+      UUID.randomUUID(),
+    )
+    val normal = provider.handler
+    provider.handler = { input ->
+      val context = json.readTree(input.context)
+      assertEquals("STRENGTH", context["profile"]["trainingGoal"].asString())
+      assertTrue(context["profile"]["ageYears"].isIntegralNumber)
+      for (secret in
+        listOf(
+          "birthDate",
+          "2000-02-29",
+          "syncId",
+          "ownerId",
+          a.id.toString(),
+          b.id.toString(),
+          "FOREIGN_PROFILE",
+          "weightKg",
+          "123.456",
+        )) assertFalse(input.context.contains(secret), secret)
+      normal(input)
+    }
+    assertEquals(200, call("/v1/ai/exercise-drafts", a, request()).statusCode())
+    provider.handler = { input ->
+      db.update("UPDATE sync_heads SET revision=1 WHERE user_id=?", a.id)
+      normal(input)
+    }
+    assertEquals(409, call("/v1/ai/exercise-drafts", a, request()).statusCode())
+    val c = owner()
+    provider.handler = { input ->
+      assertTrue(json.readTree(input.context)["profile"].isNull)
+      normal(input)
+    }
+    assertEquals(200, call("/v1/ai/exercise-drafts", c, request()).statusCode())
+  }
+
   @Test
   fun `catalog context cannot include another owner and existing IDs must resolve`() {
     val a = owner()
@@ -332,6 +395,7 @@ class AiIntegrationTest {
   @Test
   fun `inbody keeps nullable draft fields and image validation is local`() {
     val a = owner()
+    addProfile(a)
     val bytes =
       ByteArrayOutputStream()
         .also { ImageIO.write(BufferedImage(2, 2, BufferedImage.TYPE_INT_RGB), "jpeg", it) }
@@ -383,7 +447,11 @@ class AiIntegrationTest {
         )
         .statusCode(),
     )
-    assertEquals(0, db.queryForObject("SELECT count(*) FROM records", Int::class.java))
+    assertEquals(1, db.queryForObject("SELECT count(*) FROM records", Int::class.java))
+    assertEquals(
+      0,
+      db.queryForObject("SELECT count(*) FROM records WHERE kind='measurement'", Int::class.java),
+    )
   }
 
   @Test

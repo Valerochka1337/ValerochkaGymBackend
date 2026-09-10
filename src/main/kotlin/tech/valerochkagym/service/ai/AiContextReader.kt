@@ -1,5 +1,6 @@
 package tech.valerochkagym.service.ai
 
+import java.time.Clock
 import java.time.Instant
 import org.springframework.stereotype.Service
 import org.springframework.transaction.support.TransactionTemplate
@@ -18,6 +19,7 @@ data class AiCapturedContext(
   val revision: AiContextRevision,
   val catalog: String,
   val allowedIds: Set<String>,
+  val profile: AiProfileContext? = null,
 )
 
 @Service
@@ -30,6 +32,7 @@ class AiContextReader(
   private val users: UserRepository,
   private val sessions: SessionRepository,
   private val json: ObjectMapper,
+  private val clock: Clock,
 ) {
   fun capture(
     identity: Identity,
@@ -54,10 +57,16 @@ class AiContextReader(
         unauthorized()
       if (head.revision != revision || common.revision != catalogRevision)
         throw aiError("ai_context_stale")
+      val personal =
+        if (includeExercises) records.findByUserIdOrderByKindAscIdAsc(identity.userId)
+        else emptyList()
+      val profile =
+        personal
+          .singleOrNull { it.kind == "profile" && !it.deleted }
+          ?.let { AiProfileContext.fromSaved(json.readTree(it.payload!!), clock) }
       val rows =
         if (includeExercises)
-          records
-            .findByUserIdOrderByKindAscIdAsc(identity.userId)
+          personal
             .filter { it.kind == "exercise" && !it.deleted }
             .map { mapOf("id" to it.id.toString(), "payload" to json.readTree(it.payload!!)) } +
             standard
@@ -72,6 +81,7 @@ class AiContextReader(
         AiContextRevision(revision, catalogRevision),
         serialized,
         rows.map { it["id"] as String }.toSet(),
+        profile,
       )
     }!!
 }

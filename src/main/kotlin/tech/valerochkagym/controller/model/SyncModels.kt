@@ -26,8 +26,14 @@ data class Change(
     private fun wireId(kind: String, raw: String): UUID {
       val id = UUID.fromString(raw)
       if (
-        kind in setOf("calendar_plan", "calendar_rule", "calendar_exception", "exercise_hint") &&
-          raw != id.toString()
+        kind in
+          setOf(
+            "calendar_plan",
+            "calendar_rule",
+            "calendar_exception",
+            "exercise_hint",
+            "profile",
+          ) && raw != id.toString()
       )
         bad("UUID объекта должен быть каноническим")
       return id

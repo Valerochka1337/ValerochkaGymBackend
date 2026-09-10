@@ -233,7 +233,7 @@
             "description": "OK",
             "headers": {
               "X-Gym-Capabilities": {
-                "description": "Accepted intersection: calendar-plans, annotated-workout-writes, exercise-hint; otherwise empty",
+                "description": "Accepted intersection: calendar-plans, annotated-workout-writes, exercise-hint, profile; otherwise empty",
                 "style": "simple",
                 "schema": {
                   "type": "string"
@@ -288,7 +288,7 @@
             "description": "OK",
             "headers": {
               "X-Gym-Capabilities": {
-                "description": "Accepted intersection: calendar-plans, annotated-workout-writes, exercise-hint; otherwise empty",
+                "description": "Accepted intersection: calendar-plans, annotated-workout-writes, exercise-hint, profile; otherwise empty",
                 "style": "simple",
                 "schema": {
                   "type": "string"
@@ -1008,7 +1008,7 @@
             "description": "OK",
             "headers": {
               "X-Gym-Capabilities": {
-                "description": "Accepted intersection: calendar-plans, annotated-workout-writes, exercise-hint; otherwise empty",
+                "description": "Accepted intersection: calendar-plans, annotated-workout-writes, exercise-hint, profile; otherwise empty",
                 "style": "simple",
                 "schema": {
                   "type": "string"
@@ -1106,7 +1106,7 @@
             "description": "OK",
             "headers": {
               "X-Gym-Capabilities": {
-                "description": "Accepted intersection: calendar-plans, annotated-workout-writes, exercise-hint; otherwise empty",
+                "description": "Accepted intersection: calendar-plans, annotated-workout-writes, exercise-hint, profile; otherwise empty",
                 "style": "simple",
                 "schema": {
                   "type": "string"
@@ -1173,7 +1173,7 @@
             "description": "OK",
             "headers": {
               "X-Gym-Capabilities": {
-                "description": "Accepted intersection: calendar-plans, annotated-workout-writes, exercise-hint; otherwise empty",
+                "description": "Accepted intersection: calendar-plans, annotated-workout-writes, exercise-hint, profile; otherwise empty",
                 "style": "simple",
                 "schema": {
                   "type": "string"

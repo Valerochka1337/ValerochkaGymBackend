@@ -15,6 +15,7 @@ import tools.jackson.databind.JsonNode
 class RecordValidator(
   private val equipmentRows: tech.valerochkagym.repository.catalog.EquipmentRepository,
   private val json: tools.jackson.databind.ObjectMapper,
+  private val clock: Clock,
 ) {
   private fun coverage() =
     equipmentRows.findAll().associate {
@@ -24,8 +25,16 @@ class RecordValidator(
   companion object {
     val calendarKinds = setOf("calendar_plan", "calendar_rule", "calendar_exception")
     val kinds =
-      setOf("exercise", "gym", "routine", "workout", "measurement", "schedule", "exercise_hint") +
-        calendarKinds
+      setOf(
+        "exercise",
+        "gym",
+        "routine",
+        "workout",
+        "measurement",
+        "schedule",
+        "exercise_hint",
+        "profile",
+      ) + calendarKinds
     val measurementFields =
       setOf(
         "measuredAt",
@@ -321,8 +330,63 @@ class RecordValidator(
     if (year !in 1970..2100) bad("Дата вне диапазона")
   }
 
+  private fun profile(n: JsonNode) {
+    val fields =
+      setOf(
+        "schemaVersion",
+        "syncId",
+        "updatedAt",
+        "trainingGoal",
+        "sex",
+        "birthDate",
+        "experienceLevel",
+        "plannedSessionsPerWeek",
+        "preferredSessionDurationMinutes",
+        "manualConstraints",
+        "equipmentIds",
+      )
+    shape(n, fields)
+    if (fields.any { !n.has(it) }) bad("Профиль требует явные nullable поля")
+    number(n, "schemaVersion", true, true, min = 1.0, max = 1.0)
+    calendarUuid(n["syncId"])
+    val updated = n["updatedAt"]
+    if (!updated.isIntegralNumber || !updated.canConvertToLong() || updated.asLong() < 0)
+      bad("Некорректное время профиля")
+    fun optionalEnum(key: String, values: Set<String>) {
+      if (!n[key].isNull) enum(n, key, values)
+    }
+    optionalEnum(
+      "trainingGoal",
+      setOf("STRENGTH", "MUSCLE_GAIN", "FAT_LOSS", "GENERAL_FITNESS", "ENDURANCE", "OTHER"),
+    )
+    optionalEnum("sex", setOf("FEMALE", "MALE", "PREFER_NOT_TO_SAY"))
+    optionalEnum("experienceLevel", setOf("BEGINNER", "INTERMEDIATE", "ADVANCED"))
+    if (!n["birthDate"].isNull) {
+      val raw = text(n, "birthDate", 10)
+      val day =
+        try {
+          LocalDate.parse(raw)
+        } catch (e: DateTimeException) {
+          bad("Некорректная дата рождения")
+        }
+      if (
+        day.toString() != raw ||
+          day < LocalDate.of(1900, 1, 1) ||
+          day > LocalDate.now(clock.withZone(ZoneOffset.UTC))
+      )
+        bad("Дата рождения вне диапазона")
+    }
+    number(n, "plannedSessionsPerWeek", integer = true, min = 1.0, max = 7.0)
+    number(n, "preferredSessionDurationMinutes", integer = true, min = 10.0, max = 240.0)
+    if (!n["manualConstraints"].isNull) annotation(n, "manualConstraints", false)
+    equipment(n)
+    val equipment = n["equipmentIds"].toList().map { it.asString() }
+    if (equipment != equipment.sorted()) bad("Оборудование должно быть отсортировано")
+  }
+
   fun validate(kind: String, n: JsonNode) {
     when (kind) {
+      "profile" -> profile(n)
       "exercise_hint" -> {
         shape(n, setOf("text", "updatedAt"))
         annotation(n, "text", false)
