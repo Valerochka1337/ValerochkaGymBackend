@@ -40,9 +40,20 @@ class AiDraftValidator(private val json: ObjectMapper) {
     return result
   }
 
-  private fun matches(n: JsonNode, s: JsonNode): Boolean {
+  /** Calendar has a separate strict provider envelope with no provider-controlled projections. */
+  fun validateCalendar(raw: JsonNode): JsonNode {
+    val schema =
+      javaClass.getResourceAsStream("/ai/calendar-output-schema.json")!!.use { json.readTree(it) }
+    if (!matches(raw, schema, schema)) throw aiError("ai_invalid_response")
+    return raw
+  }
+
+  private fun matches(n: JsonNode, s: JsonNode, root: JsonNode = s): Boolean {
+    s["${'$'}ref"]?.let {
+      return matches(n, resolve(it, root), root)
+    }
     s["anyOf"]?.let {
-      return it.any { schema -> matches(n, schema) }
+      return it.any { schema -> matches(n, schema, root) }
     }
     val types =
       s["type"]
@@ -68,11 +79,11 @@ class AiDraftValidator(private val json: ObjectMapper) {
           s["required"]?.any { !n.has(it.asString()) } == true
       )
         return false
-      return n.properties().all { matches(it.value, props[it.key]) }
+      return n.properties().all { matches(it.value, props[it.key], root) }
     }
     if (n.isArray)
       return (s["minItems"] == null || n.size() >= s["minItems"].asInt()) &&
-        n.all { matches(it, s["items"]) }
+        n.all { matches(it, s["items"], root) }
     if (n.isNumber) {
       if (
         !n.asDouble().isFinite() ||
@@ -99,5 +110,10 @@ class AiDraftValidator(private val json: ObjectMapper) {
         }
     }
     return true
+  }
+
+  private fun resolve(reference: JsonNode, schema: JsonNode): JsonNode {
+    val path = reference.asString().removePrefix("#/").split('/').filter(String::isNotEmpty)
+    return path.fold(schema) { node, segment -> node[segment] ?: return node }
   }
 }

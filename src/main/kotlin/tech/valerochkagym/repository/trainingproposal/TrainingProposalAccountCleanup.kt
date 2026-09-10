@@ -81,6 +81,7 @@ class TrainingProposalAccountCleanup(
     )
     jdbc.update("DELETE FROM coach_relation_operations WHERE actor_id=?", userId)
     jdbc.update("DELETE FROM training_proposal_operations WHERE recipient_id=?", userId)
+    jdbc.update("DELETE FROM calendar_ai_attempts WHERE owner_id=?", userId)
     jdbc.update(
       "DELETE FROM training_proposal_receipts WHERE proposal_id IN (SELECT id FROM training_proposals WHERE recipient_id=?)",
       userId,

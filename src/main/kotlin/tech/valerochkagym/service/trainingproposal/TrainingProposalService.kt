@@ -111,6 +111,110 @@ class TrainingProposalService(
     }
   }
 
+  /** Calendar has a separate typed internal entry point; no HTTP actor can select it. */
+  fun createCalendarInternalAi(
+    identity: Identity,
+    expectedOwnerRevision: Long,
+    expectedCatalogRevision: Long,
+    draft: ApprovalDraft,
+  ): ProposalResponse {
+    val normalized = validator.normalize(draft)
+    return tx.execute {
+      // This path intentionally materializes only draft dependencies. Do not replace it with the
+      // legacy creator: that path has owner-wide history and live-draft scans.
+      relations.guards(identity.userId)
+      val catalogHead = catalog.readLock()
+      val ownerHead = head(identity.userId)
+      if (
+        catalogHead.revision != expectedCatalogRevision ||
+          ownerHead.revision != expectedOwnerRevision
+      )
+        throw ApiException(409, "proposal_stale", "Контекст предложения изменился")
+      lockSession(identity)
+      val now = clock.instant()
+      validator.validateDraft(normalized, now)
+      validateCalendarLiveDraft(normalized, identity.userId, catalogHead.active, now)
+      val entity =
+        proposals.saveAndFlush(
+          TrainingProposalEntity(
+            recipientId = identity.userId,
+            source = TrainingProposalSource.AI,
+            status = TrainingProposalStatus.PENDING,
+            currentVersion = 1,
+            createdAt = now,
+            updatedAt = now,
+            expiresAt = now.plusSeconds(7 * 24 * 60 * 60),
+          )
+        )
+      val version =
+        TrainingProposalVersionEntity(
+          proposalId = entity.id,
+          version = 1,
+          draft = json.writeValueAsString(normalized),
+          ownerRevision = ownerHead.revision,
+          catalogRevision = catalogHead.revision,
+          createdAt = now,
+        )
+      versions.save(version)
+      proposal(entity, version)
+    }!!
+  }
+
+  private fun validateCalendarLiveDraft(
+    draft: ApprovalDraft,
+    owner: UUID,
+    catalogActive: Boolean,
+    now: Instant,
+  ) {
+    if (records.hasActiveWorkout(owner))
+      throw ApiException(409, "active_workout", "Сначала завершите текущую тренировку")
+    val exerciseIds = draft.exercises.map { UUID.fromString(it.exerciseId) }.distinct()
+    val gymIds = draft.gymIds.map(UUID::fromString).distinct()
+    // Each query has a finite request-derived IN list (at most 12 exercises / 1000 gyms).
+    val personalExercises =
+      records.findByUserIdAndKindAndIdInAndDeletedFalse(owner, "exercise", exerciseIds)
+    val personalGyms = records.findByUserIdAndKindAndIdInAndDeletedFalse(owner, "gym", gymIds)
+    val standardExercises =
+      if (catalogActive) standard.findByKindAndIdInAndArchivedFalse("exercise", exerciseIds)
+      else emptyList()
+    val standardGyms =
+      if (catalogActive) standard.findByKindAndIdInAndArchivedFalse("gym", gymIds) else emptyList()
+    val aggregate = linkedMapOf<RecordKey, Record>()
+    (personalExercises + personalGyms).forEach { row ->
+      aggregate[RecordKey(row.kind, row.id)] =
+        Record(row.kind, row.id, row.revision, row.deleted, row.payload?.let(json::readTree))
+    }
+    (standardExercises + standardGyms).forEach { row ->
+      aggregate[RecordKey(row.kind, row.id)] =
+        Record(row.kind, row.id, row.revision, false, json.readTree(row.payload))
+    }
+    draft.exercises.forEach { exercise ->
+      val record =
+        aggregate[RecordKey("exercise", UUID.fromString(exercise.exerciseId))]
+          ?: bad("Упражнение недоступно")
+      val type = record.payload!!["type"]?.asString() ?: bad("Упражнение недоступно")
+      exercise.plannedSets.forEach { validator.plannedSet(it, type) }
+    }
+    draft.gymIds.forEach { id ->
+      if (aggregate[RecordKey("gym", UUID.fromString(id))] == null) bad("Зал недоступен")
+    }
+    val routineId = UUID.randomUUID()
+    val planId = UUID.randomUUID()
+    val routine = routinePayload(draft, now)
+    val plan = calendarPlanPayload(routineId, draft)
+    recordValidator.validate("routine", routine)
+    recordValidator.validate("calendar_plan", plan)
+    val candidate = aggregate.toMutableMap()
+    candidate[RecordKey("routine", routineId)] = Record("routine", routineId, 0, false, routine)
+    candidate[RecordKey("calendar_plan", planId)] = Record("calendar_plan", planId, 0, false, plan)
+    recordValidator.references(
+      candidate,
+      setOf(RecordKey("routine", routineId), RecordKey("calendar_plan", planId)),
+      aggregate,
+    )
+    recordValidator.archivedReferences(candidate, aggregate, emptySet())
+  }
+
   fun mutateCoach(
     identity: Identity,
     relationId: UUID,
@@ -373,8 +477,8 @@ class TrainingProposalService(
             ownerHead.revision != version.ownerRevision
         )
           return@execute stale(proposal, now, "proposal_stale")
-        if (validator.normalize(request.draft) != draft(version))
-          return@execute stale(proposal, now, "proposal_stale")
+        // The author snapshot remains immutable. A recipient may approve a fresh local edit;
+        // proposal_operations retains the exact raw accepted bytes for replay and audit.
         validator.validateDraft(request.draft, now)
         val live =
           try {

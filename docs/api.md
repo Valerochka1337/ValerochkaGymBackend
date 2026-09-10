@@ -140,11 +140,15 @@ instant плана проверяется после перевода в его 
 
 `GET /v1/ai/status` возвращает `{schemaVersion:1,availability,actions}`. При неполной либо
 выключенной конфигурации availability=`UNCONFIGURED`, actions=[]; иначе `AVAILABLE` и
-`EXERCISE_DRAFT`, `INBODY_PHOTO_DRAFT`. Это наличие конфигурации, не проверка live provider.
+`EXERCISE_DRAFT`, `INBODY_PHOTO_DRAFT`, `CALENDAR_DRAFT`. Это наличие конфигурации, не проверка live provider.
 AI не меняет readiness приложения и не повышает sync protocol/capabilities.
 
 - `POST /v1/ai/exercise-drafts`: `{requestId,expectedRevision,expectedCatalogRevision,description}`.
 - `POST /v1/ai/inbody-drafts`: `{requestId,expectedRevision,expectedCatalogRevision,image:{mediaType:"image/jpeg",base64}}`.
+- `POST /v1/ai/calendar-drafts`: строгое UTF-8 JSON-тело из
+  [контракта calendar AI](../src/test/resources/calendar-ai-contract.json). Оно связывается с
+  SHA-256 исходных байтов и `requestId`; успешный повтор возвращает первоначальный PENDING
+  proposal без нового provider-вызова. Сервер не передаёт provider веса, историю или health/InBody.
 - Ответ: `{requestId,context:{revision,catalogRevision},result}`. Exercise result —
   `{kind:"EXISTING",exerciseId:UUID}` либо `{kind:"NEW",name,type,muscles:[{muscle,contribution}]}`.
   InBody result — `{kind:"INBODY",draft}` с точными nullable полями и пятью сегментами из
@@ -305,7 +309,7 @@ health, or AI disclosure as a cross-account read surface. The frozen JSON contra
   `POST /{relationId}/training-proposals/{proposalId}/revoke`: server derives COACH author and immutable
   origin relation. Old relations and legacy proposals without origin never authorize pending approval.
   The legacy PLAN-01 revoke endpoint remains denied because it has no operation ID.
-  PLAN-01 stored-draft equality still applies; edited-preview acceptance is not implemented here.
+  PLAN-01 accepts recipient-edited previews after live validation. The author version remains immutable; approval retains the exact accepted request bytes for replay and audit.
 
 All relation mutators validate strict UTF-8 JSON with a 512 KiB budget and bind operation UUID globally
 per actor to action, route, resource tuple and raw SHA-256. Create/accept ledgers omit raw secret bodies;

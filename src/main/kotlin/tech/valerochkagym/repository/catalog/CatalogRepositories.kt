@@ -19,6 +19,11 @@ interface CatalogStateRepository : JpaRepository<CatalogStateEntity, Int> {
 
 interface StandardRepository : JpaRepository<StandardEntity, StandardId> {
   fun findAllByOrderByKindAscIdAsc(): List<StandardEntity>
+
+  fun findByKindAndIdInAndArchivedFalse(
+    kind: String,
+    ids: Collection<java.util.UUID>,
+  ): List<StandardEntity>
 }
 
 interface EquipmentRepository : JpaRepository<EquipmentEntity, String> {

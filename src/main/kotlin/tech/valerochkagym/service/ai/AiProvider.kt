@@ -9,6 +9,7 @@ data class AiProviderInput(
   val context: String,
   val schema: JsonNode,
   val imageBase64: String? = null,
+  val schemaName: String? = null,
 )
 
 interface AiProvider {
@@ -25,6 +26,9 @@ class UnconfiguredAiProvider : AiProvider {
 
 fun aiError(code: String): ApiException =
   when (code) {
+    "ai_request_conflict" -> ApiException(409, code, "Этот идентификатор запроса уже использован")
+    "ai_in_progress" -> ApiException(409, code, "Запрос AI ещё выполняется")
+    "ai_interrupted" -> ApiException(409, code, "Предыдущая попытка была прервана")
     "ai_context_stale" -> ApiException(409, code, "Данные изменились. Синхронизируйте и повторите")
     "ai_context_too_large" -> ApiException(409, code, "Каталог слишком большой для обработки")
     "ai_invalid_response" ->

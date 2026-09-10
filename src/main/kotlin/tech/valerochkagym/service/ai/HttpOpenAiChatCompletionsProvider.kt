@@ -51,7 +51,8 @@ class HttpOpenAiChatCompletionsProvider(
               "type" to "json_schema",
               "json_schema" to
                 mapOf(
-                  "name" to if (input.vision) "inbody_draft" else "exercise_draft",
+                  "name" to
+                    (input.schemaName ?: if (input.vision) "inbody_draft" else "exercise_draft"),
                   "strict" to true,
                   "schema" to input.schema,
                 ),

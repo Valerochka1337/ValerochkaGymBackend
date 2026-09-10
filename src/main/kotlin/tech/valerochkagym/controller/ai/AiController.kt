@@ -28,6 +28,13 @@ class AiController(private val service: AiActionService) {
     service.inbody(identity, request, disclosureRevision)
   }
 
+  @PostMapping("/calendar-drafts", consumes = ["application/json"])
+  fun calendar(
+    @AuthenticationPrincipal identity: Identity,
+    @RequestBody raw: ByteArray,
+  ): DeferredResult<CalendarDraftResponse> =
+    asyncCalendar(identity, raw) { service.calendar(identity, raw) }
+
   private fun async(action: () -> AiDraftResponse): DeferredResult<AiDraftResponse> {
     val result = DeferredResult<AiDraftResponse>(45000)
     val task = FutureTask {
@@ -47,6 +54,42 @@ class AiController(private val service: AiActionService) {
     }
     result.onError { task.cancel(true) }
     result.onCompletion { if (!task.isDone) task.cancel(true) }
+    Thread.ofVirtual().start(task)
+    return result
+  }
+
+  private fun asyncCalendar(
+    identity: Identity,
+    raw: ByteArray,
+    action: () -> CalendarDraftResponse,
+  ): DeferredResult<CalendarDraftResponse> {
+    val result = DeferredResult<CalendarDraftResponse>(45000)
+    val task = FutureTask {
+      try {
+        result.setResult(action())
+      } catch (e: Exception) {
+        result.setErrorResult(
+          if (e is tech.valerochkagym.controller.advice.ApiException) e
+          else aiError("ai_unavailable")
+        )
+      }
+      Unit
+    }
+    result.onTimeout {
+      service.cancelCalendar(identity, raw)
+      task.cancel(true)
+      result.setErrorResult(aiError("ai_timeout"))
+    }
+    result.onError {
+      service.cancelCalendar(identity, raw)
+      task.cancel(true)
+    }
+    result.onCompletion {
+      if (!task.isDone) {
+        service.cancelCalendar(identity, raw)
+        task.cancel(true)
+      }
+    }
     Thread.ofVirtual().start(task)
     return result
   }

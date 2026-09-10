@@ -16,6 +16,7 @@ class AiActionService(
   private val validator: AiDraftValidator,
   private val images: AiImageInput,
   private val json: ObjectMapper,
+  private val calendar: CalendarAiService,
 ) {
   private val permits = Semaphore(2)
 
@@ -33,7 +34,8 @@ class AiActionService(
     AiStatus(
       availability = if (provider.available) "AVAILABLE" else "UNCONFIGURED",
       actions =
-        if (provider.available) listOf("EXERCISE_DRAFT", "INBODY_PHOTO_DRAFT") else emptyList(),
+        if (provider.available) listOf("EXERCISE_DRAFT", "INBODY_PHOTO_DRAFT", "CALENDAR_DRAFT")
+        else emptyList(),
     )
 
   fun exercise(identity: Identity, request: ExerciseDraftRequest): AiDraftResponse {
@@ -74,6 +76,12 @@ class AiActionService(
       )
     }
   }
+
+  fun calendar(identity: Identity, raw: ByteArray): CalendarDraftResponse = admitted {
+    calendar.create(identity, raw)
+  }
+
+  fun cancelCalendar(identity: Identity, raw: ByteArray) = calendar.cancel(identity, raw)
 
   private fun check(id: String, revision: Long, catalogRevision: Long) {
     if (

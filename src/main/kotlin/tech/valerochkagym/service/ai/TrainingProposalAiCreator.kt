@@ -18,6 +18,14 @@ class TrainingProposalAiCreator(private val proposals: TrainingProposalService) 
       request.draft,
       request.proposalId,
     )
+
+  fun createCalendar(request: InternalCalendarAiProposalRequest): ProposalResponse =
+    proposals.createCalendarInternalAi(
+      request.recipient,
+      request.expectedOwnerRevision,
+      request.expectedCatalogRevision,
+      request.draft,
+    )
 }
 
 data class InternalAiProposalRequest(
@@ -26,4 +34,11 @@ data class InternalAiProposalRequest(
   val expectedCatalogRevision: Long,
   val draft: ApprovalDraft,
   val proposalId: UUID? = null,
+)
+
+data class InternalCalendarAiProposalRequest(
+  val recipient: Identity,
+  val expectedOwnerRevision: Long,
+  val expectedCatalogRevision: Long,
+  val draft: ApprovalDraft,
 )

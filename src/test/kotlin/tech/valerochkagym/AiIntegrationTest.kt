@@ -186,6 +186,50 @@ class AiIntegrationTest {
     )
   }
 
+  @Test
+  fun `calendar draft persists one pending proposal and replays its original receipt`() {
+    val a = owner()
+    val exercise = UUID.randomUUID()
+    db.update(
+      "INSERT INTO records(user_id,kind,id,revision,deleted,payload) VALUES (?,'exercise',?,0,false,?::jsonb)",
+      a.id,
+      exercise,
+      "{\"name\":\"Press\",\"type\":\"STRENGTH\",\"muscles\":[{\"muscle\":\"UPPER_CHEST\",\"contribution\":100}],\"equipmentIds\":[],\"equipmentRequirementState\":\"KNOWN\"}",
+    )
+    provider.handler = {
+      json.readTree(
+        "{\"result\":{\"name\":\"AI Press\",\"exercises\":[{\"exerciseId\":\"$exercise\",\"restSeconds\":90,\"plannedSets\":[{\"reps\":8,\"durationSec\":null}]}]}}"
+      )
+    }
+    val body =
+      linkedMapOf<String, Any?>(
+        "requestId" to UUID.randomUUID().toString(),
+        "expectedRevision" to 0,
+        "expectedCatalogRevision" to 0,
+        "startsAtMillis" to (System.currentTimeMillis() + 86_400_000),
+        "timeZoneId" to "UTC",
+        "gymIds" to emptyList<String>(),
+        "excludedExerciseIds" to emptyList<String>(),
+        "excludedEquipmentIds" to emptyList<String>(),
+        "priorityMuscles" to listOf("UPPER_CHEST"),
+        "includeNotes" to false,
+        "availableDurationMinutes" to 45,
+        "currentState" to null,
+        "preferences" to null,
+      )
+    val first = call("/v1/ai/calendar-drafts", a, body)
+    assertEquals(200, first.statusCode(), first.body())
+    val replay = call("/v1/ai/calendar-drafts", a, body)
+    assertEquals(200, replay.statusCode(), replay.body())
+    assertEquals(first.body(), replay.body())
+    assertEquals(1, provider.calls)
+    assertEquals(1, db.queryForObject("SELECT count(*) FROM training_proposals", Int::class.java))
+    assertEquals(
+      "SUCCEEDED",
+      db.queryForObject("SELECT state FROM calendar_ai_attempts", String::class.java),
+    )
+  }
+
   fun addExercise(owner: Owner, id: UUID, name: String) {
     val payload =
       json.writeValueAsString(
@@ -536,6 +580,7 @@ class AiIntegrationTest {
     assertEquals(200, response.statusCode())
     val doc = json.readTree(response.body())
     assertTrue(doc["paths"].has("/v1/ai/inbody-drafts"))
+    assertTrue(doc["paths"].has("/v1/ai/calendar-drafts"))
     val file = java.nio.file.Path.of("build/reports/openapi.json")
     java.nio.file.Files.createDirectories(file.parent)
     java.nio.file.Files.writeString(file, response.body())
@@ -550,6 +595,16 @@ class AiIntegrationTest {
     for (name in listOf("exercise", "inbody")) assertEquals(
       fixture["provider"]["${name}OutputSchema"],
       json.readTree(javaClass.getResourceAsStream("/ai/$name-output-schema.json")),
+    )
+    val calendar =
+      java.nio.file.Files.readAllBytes(
+        java.nio.file.Path.of("src/test/resources/calendar-ai-contract.json")
+      )
+    assertEquals(
+      "42714ea6086c8d7349543cfdb3d11cfac86d04fe67b15ec743ff388f4e31b18e",
+      java.security.MessageDigest.getInstance("SHA-256").digest(calendar).joinToString("") {
+        "%02x".format(it)
+      },
     )
   }
 }

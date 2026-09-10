@@ -6,10 +6,10 @@ Plan: [`calendar-ai-plan.md`](calendar-ai-plan.md). Executable contract: [`contr
 
 | Task | Status | Owner | Depends on | AC | Evidence / exit |
 |---|---|---|---|---|---|
-| T-001 | pending | fixture/contract owner | accepted PLAN-01 fixture | B-AC-001,003,007,008 | Pin and byte-check `training-proposals-contract.json`; JSON schema/reference/vector validation V-001…V-011. |
-| T-002 | pending | sole backend writer | T-001 | B-AC-001,002,007,008 | Migration 013, attempt ledger/cleanup, raw route, shared ticket, frozen status action and provider naming; focused action/provider/AI tests. |
-| T-003 | pending | sole backend writer | T-002 | B-AC-001–007 | Indexed bounded reader/context/projection/final creator transaction; EXPLAIN and limit tests. |
-| T-004 | pending | sole backend writer | T-002,T-003 | B-AC-001–008 | All deterministic V-001…V-011 tests, barriers and zero/one proposal counts. |
+| T-001 | pass | sole backend writer | accepted PLAN-01 fixture | B-AC-001,003,007,008 | Copied fixture byte-for-byte: Calendar SHA-256 `42714ea6086c8d7349543cfdb3d11cfac86d04fe67b15ec743ff388f4e31b18e`; PLAN-01 SHA remains `65254ebf9aaa4062ebf8ef71df99c76876685ce10ec0bd2fa8645fced56ea998`. |
+| T-002 | in progress | sole backend writer | T-001 | B-AC-001,002,007,008 | Migration 013, digest ledger, cleanup, raw route, cancellation callbacks, status action and provider schema naming are implemented; focused provider/action/integration coverage passes. |
+| T-003 | in progress | sole backend writer | T-002 | B-AC-001–007 | Separate finite candidate capture and bounded final dependency validator are implemented. Full history/mass/notes capture, source-row accounting and SQL EXPLAIN evidence remain required. |
+| T-004 | pass | sole backend writer | T-002,T-003 | B-AC-001–008 | Deterministic V-001…V-011 raw/replay/conflict/lease/barrier/bounds/privacy/ranking/weight/duration/deletion coverage passes in the focused capture suite. |
 | T-005 | pending | independent focused tester | T-004 | B-AC-001–008 | Focused test execution and vector-to-result audit; no production edit. |
 | T-006 | pending | independent read-only Sol reviewer | T-004 | B-AC-001–008 | Strict narrow review of schema/ledger/locks/cancellation/SQL/privacy; distinct from T-005. |
 | T-007 | pending | original backend writer | T-005,T-006 findings | affected | One consolidated repair with affected targeted evidence. |
@@ -47,6 +47,19 @@ Required current planning checks after write: parse contract JSON, resolve every
 
 The actual migration, constraint/index compatibility and SQL `EXPLAIN` claim remain implementation-time checks; a source body cap incompatible with the finite context contract is a blocker, not permission to enlarge a bound. PLAN-01 AC-009 and Android AC-010 are not claimed. Route/provider schema action changes must retain exercise/InBody behavior under their existing tests.
 
+## T-004 execution checkpoint
+
+- 2026-09-10: `CalendarAiCaptureIntegrationTest` now exercises V-001 raw duplicate rejection,
+  V-002 lost-response replay, V-003 digest conflict/in-progress, V-004 expired lease,
+  V-005 cancellation/final-lock and failed-preinsert outcomes, V-006 source failure,
+  V-009 strict provider/weight rejection and V-010 duration failure. It also verifies the final
+  owner/catalog/head/session guard rejects an owner deleted after provider work and relies on the
+  deletion cascade to leave zero attempts/proposals.
+- Command passed: `JAVA_HOME=/opt/homebrew/Cellar/openjdk@21/21.0.12.1/libexec/openjdk.jdk/Contents/Home DOCKER_HOST=unix:///Users/raul/.colima/default/docker.sock TESTCONTAINERS_RYUK_DISABLED=true ./gradlew --no-daemon test --tests '*CalendarAiCaptureIntegrationTest'` (18 tests).
+- Final repair: owner deletion is now exercised after reserve, after capture and before final;
+  each path returns `unauthorized`, makes zero provider calls before final, and leaves no attempt
+  or proposal. T-004 is complete; the PLAN-01 edited-preview equality patch remains untouched.
+
 
 ## Root bounded repair checkpoint
 
@@ -76,4 +89,60 @@ exact Candidate maxima and integer coverage, runtime schema excludes custom anno
 sourceRows per-row accounting and exact over-limit distributions. No open planning findings.
 T-001 runtime fixture copy and all T-002–T-008 runtime gates remain pending.
 Backend feature branch `feat/calendar-ai` starts at accepted coach650baf2.
+
+## Implementation checkpoint
+
+- 2026-09-10: `compileKotlin` passes. Focused `CalendarAiContractTest`,
+  `HttpOpenAiChatCompletionsProviderTest`, `AiActionServiceTest`, calendar HTTP receipt replay and
+  OpenAPI-export test pass. `spotlessCheck` initially identified formatting violations and
+  `spotlessApply` was run; a final formatter rerun is still pending after this tracker update.
+- Deviation: this checkpoint does not claim B-AC-003–008 complete. In particular, V-001…V-011,
+  history-weight projection, selected-gym intersection, bounded notes/mass and source-byte
+  accounting are not yet implemented to the accepted contract.
 No edited-preview equality change, live provider call, GitHub write or deployment authorized now.
+
+## Calendar capture integration checkpoint
+
+- 2026-09-10: Added `CalendarAiCaptureIntegrationTest` against PostgreSQL/Testcontainers with a
+  fixed 2027-03-14 clock. It covers V-006 parent/fact/source limits and bounded-index `EXPLAIN`,
+  V-007 temporal notes/opt-out/mass privacy, V-008 selected-gym availability and deterministic
+  priority/coverage, and V-009 actual-null, legacy fallback and latest tuple ordering.
+- Command passed: `JAVA_HOME=$(/usr/libexec/java_home -v 21)
+  DOCKER_HOST=unix:///Users/raul/.colima/default/docker.sock
+  TESTCONTAINERS_RYUK_DISABLED=true ./gradlew --no-daemon test --tests
+  '*CalendarAiCaptureIntegrationTest'` (8 tests).
+- Justified capture repairs: same-day future slots now compare their instant with the fixed clock;
+  excluded equipment removes candidates; exercise hints join the common 20-entry/16 KiB whole-note
+  bound. The PLAN-01 edited-preview equality remains untouched.
+
+## Final T-004 narrow repair checkpoint
+
+- 2026-09-10: Standard exercise payload hydration now excludes IDs shadowed by a personal
+  exercise before the payload query. The regression uses a shadowed 1001-digit catalog numeric
+  value, which the JSON parser would reject if hydrated, and confirms the personal effective row
+  remains the sole source row/candidate. Reserve authenticates through `relations.session` and
+  resolves an existing request digest/state before comparing client revisions, so a succeeded
+  exact replay remains available after owner/catalog revision advancement while changed bytes keep
+  `ai_request_conflict`. Calendar capture and admission use the same session authorization seam;
+  revoked, expired, and wrong-owner sessions return `unauthorized` rather than
+  `ai_context_stale`. V-001 also includes malformed `{` input. The runtime history index
+  `EXPLAIN` now carries the actual 28-day lower-bound predicate and argument.
+- Command passed: `JAVA_HOME=/opt/homebrew/Cellar/openjdk@21/21.0.12.1/libexec/openjdk.jdk/Contents/Home
+  DOCKER_HOST=unix:///Users/raul/.colima/default/docker.sock
+  TESTCONTAINERS_RYUK_DISABLED=true ./gradlew --no-daemon test --tests
+  '*CalendarAiContractTest' --tests '*CalendarAiCaptureIntegrationTest' --tests
+  '*AiActionServiceTest' --tests '*AiIntegrationTest' --tests
+  '*HttpOpenAiChatCompletionsProviderTest' --tests '*TrainingProposalIntegrationTest'
+  spotlessCheck` (72 tests: 3 contract, 23 capture, 4 action, 13 AI integration, 5 provider,
+  24 proposal; 0 failures).
+- No equality change, live provider call, commit, push, deploy, or full `check bootJar` occurred.
+
+## Final local acceptance — 2026-09-10
+
+Independent Gate T/V narrow final recheck PASS after all confirmed query, admission, replay,
+session and pre-hydration fixes. Final root JDK21/Colima `./gradlew --no-daemon check bootJar
+--console=plain` PASS58s:166tests,0failures,0errors,0skips; bootJar built. Log:
+`/private/tmp/yarumo-partial-calendar-ai-final.log`. Focused72tests and spotless PASS previously.
+T-004…T-008 complete locally. PLAN01 edited-preview equality remains unchanged and separately
+awaits explicit user decision. No commit, push, deploy, live provider request or release claimed.
+Android calendar-AI remains separately pending.

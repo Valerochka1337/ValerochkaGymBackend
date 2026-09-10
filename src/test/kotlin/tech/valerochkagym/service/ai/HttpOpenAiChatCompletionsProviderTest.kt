@@ -72,6 +72,15 @@ class HttpOpenAiChatCompletionsProviderTest {
       if (vision) "aGVsbG8=" else null,
     )
 
+  fun calendarInput() =
+    AiProviderInput(
+      false,
+      "server instructions",
+      "bounded context",
+      json.readTree(javaClass.getResourceAsStream("/ai/calendar-output-schema.json")),
+      schemaName = "calendar_draft",
+    )
+
   fun envelope() =
     json.writeValueAsString(
       mapOf(
@@ -116,6 +125,11 @@ class HttpOpenAiChatCompletionsProviderTest {
       vision["messages"][1]["content"][1]["image_url"]["url"].asString(),
     )
     assertFalse(vision.has("tools"))
+    p.generate(calendarInput())
+    assertEquals(
+      "calendar_draft",
+      captured.get()["response_format"]["json_schema"]["name"].asString(),
+    )
   }
 
   @Test

@@ -212,6 +212,114 @@ class TrainingProposalIntegrationTest {
   }
 
   @Test
+  fun `recipient edit materializes new records while author version remains immutable`() {
+    val owner = owner()
+    val proposal = proposal(owner)
+    val authorDraft =
+      db.queryForObject(
+        "SELECT draft::text FROM training_proposal_versions WHERE proposal_id=? AND version=1",
+        String::class.java,
+        proposal.proposalId,
+      )!!
+    val edited =
+      draft(owner)
+        .copy(
+          name = "Изменённая программа",
+          exercises =
+            listOf(
+              PlannedExercise(
+                owner.exercise.toString(),
+                120,
+                listOf(PlannedSet(42.5, 12, null, null, null)),
+              )
+            ),
+          startsAtMillis = 1_893_456_000_001,
+        )
+    val raw = body(UUID.randomUUID(), 1, edited)
+    val first =
+      call("POST", "/v1/training-proposals/${proposal.proposalId}/approve", owner, raw, true)
+    assertEquals(200, first.statusCode(), first.body())
+    assertEquals(
+      authorDraft,
+      db.queryForObject(
+        "SELECT draft::text FROM training_proposal_versions WHERE proposal_id=? AND version=1",
+        String::class.java,
+        proposal.proposalId,
+      ),
+    )
+    val accepted = json.readTree(first.body())
+    val routine =
+      json.readTree(
+        db.queryForObject(
+          "SELECT payload::text FROM records WHERE user_id=? AND kind='routine' AND id=?",
+          String::class.java,
+          owner.id,
+          UUID.fromString(accepted["routineId"].asString()),
+        )!!
+      )
+    val plan =
+      json.readTree(
+        db.queryForObject(
+          "SELECT payload::text FROM records WHERE user_id=? AND kind='calendar_plan' AND id=?",
+          String::class.java,
+          owner.id,
+          UUID.fromString(accepted["calendarPlanId"].asString()),
+        )!!
+      )
+    assertEquals("Изменённая программа", routine["name"].asString())
+    assertEquals(42.5, routine["exercises"][0]["plannedSets"][0]["weightKg"].asDouble())
+    assertEquals(1_893_456_000_001, plan["startsAtMillis"].asLong())
+    val replay =
+      call("POST", "/v1/training-proposals/${proposal.proposalId}/approve", owner, raw, true)
+    assertEquals(200, replay.statusCode())
+    assertEquals(accepted, json.readTree(replay.body()))
+    assertEquals(
+      2,
+      db.queryForObject(
+        "SELECT count(*) FROM records WHERE user_id=? AND kind IN ('routine','calendar_plan')",
+        Int::class.java,
+        owner.id,
+      ),
+    )
+  }
+
+  @Test
+  fun `invalid recipient edit creates no proposal approval state`() {
+    val owner = owner()
+    val proposal = proposal(owner)
+    val invalid = body(UUID.randomUUID(), 1, draft(owner).copy(name = " "))
+    assertEquals(
+      400,
+      call("POST", "/v1/training-proposals/${proposal.proposalId}/approve", owner, invalid, true)
+        .statusCode(),
+    )
+    assertEquals(
+      0,
+      db.queryForObject(
+        "SELECT count(*) FROM records WHERE user_id=? AND kind IN ('routine','calendar_plan')",
+        Int::class.java,
+        owner.id,
+      ),
+    )
+    assertEquals(
+      0,
+      db.queryForObject("SELECT count(*) FROM training_proposal_receipts", Int::class.java),
+    )
+    assertEquals(
+      0,
+      db.queryForObject("SELECT count(*) FROM training_proposal_operations", Int::class.java),
+    )
+    assertEquals(
+      0L,
+      db.queryForObject(
+        "SELECT revision FROM sync_heads WHERE user_id=?",
+        Long::class.java,
+        owner.id,
+      ),
+    )
+  }
+
+  @Test
   fun `recipient routes hide proposals and enforce capability and raw schema`() {
     val owner = owner()
     val outsider = owner()
@@ -654,6 +762,62 @@ class TrainingProposalIntegrationTest {
       Identity(coach.id, coach.session, "${coach.id}@example.com")
     )
     assertEquals(1, insert(coach.id))
+  }
+
+  @Test
+  fun `edited coach approval requires authority and preserves its immutable author binding`() {
+    val coach = owner()
+    val recipient = owner()
+    val relation = rawRelation(coach, recipient)
+    fakeAuthority.mode = "allow"
+    val proposal =
+      proposalService.mutateCoach(
+        Identity(coach.id, coach.session, "${coach.id}@example.com"),
+        relation,
+        null,
+        json.writeValueAsBytes(
+          mapOf(
+            "operationId" to UUID.randomUUID(),
+            "expectedOwnerRevision" to 0,
+            "expectedCatalogRevision" to 0,
+            "draft" to draft(recipient),
+          )
+        ),
+        "CREATE_COACH_PROPOSAL",
+      ) as ProposalResponse
+    val original =
+      db.queryForMap(
+        "SELECT p.author_id,p.origin_relation_id,v.draft::text FROM training_proposals p JOIN training_proposal_versions v ON v.proposal_id=p.id AND v.version=1 WHERE p.id=?",
+        proposal.proposalId,
+      )
+    val raw = body(UUID.randomUUID(), 1, draft(recipient).copy(name = "Правка получателя"))
+    fakeAuthority.mode = "deny"
+    assertEquals(
+      403,
+      call("POST", "/v1/training-proposals/${proposal.proposalId}/approve", recipient, raw, true)
+        .statusCode(),
+    )
+    assertEquals(
+      0,
+      db.queryForObject(
+        "SELECT count(*) FROM training_proposal_receipts WHERE proposal_id=?",
+        Int::class.java,
+        proposal.proposalId,
+      ),
+    )
+    fakeAuthority.mode = "allow"
+    val response =
+      call("POST", "/v1/training-proposals/${proposal.proposalId}/approve", recipient, raw, true)
+    assertEquals(200, response.statusCode(), response.body())
+    assertEquals(
+      original,
+      db.queryForMap(
+        "SELECT p.author_id,p.origin_relation_id,v.draft::text FROM training_proposals p JOIN training_proposal_versions v ON v.proposal_id=p.id AND v.version=1 WHERE p.id=?",
+        proposal.proposalId,
+      ),
+    )
+    assertEquals(coach.id, original["author_id"])
+    assertEquals(relation, original["origin_relation_id"])
   }
 
   @Test

@@ -31,6 +31,19 @@ interface RecordRepository : JpaRepository<RecordEntity, RecordId> {
   @Query("select count(r)>0 from RecordEntity r where r.id=:id") fun uuidExists(id: UUID): Boolean
 
   fun findByUserIdOrderByKindAscIdAsc(user: UUID): List<RecordEntity>
+
+  fun findByUserIdAndKindAndIdInAndDeletedFalse(
+    userId: UUID,
+    kind: String,
+    ids: Collection<UUID>,
+  ): List<RecordEntity>
+
+  @Query(
+    value =
+      "SELECT EXISTS(SELECT 1 FROM records WHERE user_id=:user AND kind='workout' AND NOT deleted AND (payload->'finishedAt' IS NULL OR payload->'finishedAt' = 'null'::jsonb))",
+    nativeQuery = true,
+  )
+  fun hasActiveWorkout(user: UUID): Boolean
 }
 
 interface OperationRepository : JpaRepository<OperationEntity, OperationId>
