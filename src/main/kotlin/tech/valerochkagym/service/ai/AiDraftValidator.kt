@@ -1,0 +1,103 @@
+package tech.valerochkagym.service.ai
+
+import java.time.LocalDate
+import org.springframework.stereotype.Component
+import tools.jackson.databind.JsonNode
+import tools.jackson.databind.ObjectMapper
+
+@Component
+class AiDraftValidator(private val json: ObjectMapper) {
+  fun schema(vision: Boolean): JsonNode =
+    javaClass
+      .getResourceAsStream("/ai/${if(vision) "inbody" else "exercise"}-output-schema.json")!!
+      .use { json.readTree(it) }
+
+  fun validate(raw: JsonNode, vision: Boolean, allowedIds: Set<String>): JsonNode {
+    if (!matches(raw, schema(vision))) throw aiError("ai_invalid_response")
+    val result = raw["result"]
+    if (!vision) {
+      if (result["kind"].asString() == "EXISTING") {
+        if (result["exerciseId"].asString() !in allowedIds) throw aiError("ai_invalid_response")
+      } else {
+        val rows = result["muscles"].toList()
+        if (
+          result["name"].asString().isBlank() ||
+            rows.map { it["muscle"].asString() }.distinct().size != rows.size ||
+            rows.none { it["contribution"].asInt() > 0 }
+        )
+          throw aiError("ai_invalid_response")
+      }
+    } else {
+      val draft = result["draft"]
+      val values =
+        draft
+          .properties()
+          .filter { it.key !in setOf("measuredDate", "measuredTime", "segments") }
+          .map { it.value } +
+          draft["segments"].properties().flatMap { it.value.properties().map { v -> v.value } }
+      if (values.all { it.isNull }) throw aiError("ai_invalid_response")
+    }
+    return result
+  }
+
+  private fun matches(n: JsonNode, s: JsonNode): Boolean {
+    s["anyOf"]?.let {
+      return it.any { schema -> matches(n, schema) }
+    }
+    val types =
+      s["type"]
+        ?.let { if (it.isArray) it.toList().map { v -> v.asString() } else listOf(it.asString()) }
+        .orEmpty()
+    val actual =
+      when {
+        n.isNull -> "null"
+        n.isObject -> "object"
+        n.isArray -> "array"
+        n.isString -> "string"
+        n.isIntegralNumber -> "integer"
+        n.isNumber -> "number"
+        else -> "unknown"
+      }
+    if (actual !in types && !(actual == "integer" && "number" in types)) return false
+    if (n.isNull) return true
+    s["enum"]?.let { if (it.none { v -> v == n }) return false }
+    if (n.isObject) {
+      val props = s["properties"] ?: return false
+      if (
+        n.properties().any { !props.has(it.key) } ||
+          s["required"]?.any { !n.has(it.asString()) } == true
+      )
+        return false
+      return n.properties().all { matches(it.value, props[it.key]) }
+    }
+    if (n.isArray)
+      return (s["minItems"] == null || n.size() >= s["minItems"].asInt()) &&
+        n.all { matches(it, s["items"]) }
+    if (n.isNumber) {
+      if (
+        !n.asDouble().isFinite() ||
+          s["minimum"]?.let { n.asDouble() < it.asDouble() } == true ||
+          s["maximum"]?.let { n.asDouble() > it.asDouble() } == true
+      )
+        return false
+      if ("integer" in types && (n.asDouble() > Int.MAX_VALUE || n.asDouble() < Int.MIN_VALUE))
+        return false
+    }
+    if (n.isString) {
+      val value = n.asString()
+      if (
+        s["minLength"]?.let { value.length < it.asInt() } == true ||
+          s["maxLength"]?.let { value.length > it.asInt() } == true ||
+          s["pattern"]?.let { !Regex(it.asString()).matches(value) } == true
+      )
+        return false
+      if (s["format"]?.asString() == "date")
+        try {
+          if (LocalDate.parse(value).toString() != value) return false
+        } catch (_: Exception) {
+          return false
+        }
+    }
+    return true
+  }
+}

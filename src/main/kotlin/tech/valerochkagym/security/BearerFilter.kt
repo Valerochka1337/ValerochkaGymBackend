@@ -19,6 +19,9 @@ class BearerFilter(
   private val limits: RateLimiter,
   private val catalog: tech.valerochkagym.repository.catalog.CatalogStateRepository,
 ) : OncePerRequestFilter() {
+  // Re-authenticate the resumed AI response dispatch; the initial stateless context is cleared.
+  override fun shouldNotFilterAsyncDispatch() = false
+
   override fun doFilterInternal(
     request: HttpServletRequest,
     response: HttpServletResponse,

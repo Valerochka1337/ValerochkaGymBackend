@@ -1457,8 +1457,9 @@ class BackendIntegrationTest {
 
   @BeforeEach
   fun clean() {
+    // Match AuthService.cleanup lock order: its initial scheduled run can overlap fixture reset.
     db.execute(
-      "TRUNCATE users,rate_limits,email_challenges,google_nonces,admin_audit,standard_records CASCADE"
+      "TRUNCATE sessions,refresh_tokens,email_challenges,google_nonces,rate_limits,users,admin_audit,standard_records CASCADE"
     )
     db.update(
       "UPDATE catalog_state SET revision=0,active=false,source_user_id=NULL,activated_at=NULL"

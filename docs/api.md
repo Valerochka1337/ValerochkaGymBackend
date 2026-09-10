@@ -135,3 +135,48 @@ instant плана проверяется после перевода в его 
 
 Канонический межплатформенный [fixture](../src/test/resources/cal01-sync-contract.json)
 проверяется HTTP-набором вместе с изоляцией владельцев, legacy-проекцией и ledger.
+
+## AI drafts v1 — авторизованный серверный AI
+
+`GET /v1/ai/status` возвращает `{schemaVersion:1,availability,actions}`. При неполной либо
+выключенной конфигурации availability=`UNCONFIGURED`, actions=[]; иначе `AVAILABLE` и
+`EXERCISE_DRAFT`, `INBODY_PHOTO_DRAFT`. Это наличие конфигурации, не проверка live provider.
+AI не меняет readiness приложения и не повышает sync protocol/capabilities.
+
+- `POST /v1/ai/exercise-drafts`: `{requestId,expectedRevision,expectedCatalogRevision,description}`.
+- `POST /v1/ai/inbody-drafts`: `{requestId,expectedRevision,expectedCatalogRevision,image:{mediaType:"image/jpeg",base64}}`.
+- Ответ: `{requestId,context:{revision,catalogRevision},result}`. Exercise result —
+  `{kind:"EXISTING",exerciseId:UUID}` либо `{kind:"NEW",name,type,muscles:[{muscle,contribution}]}`.
+  InBody result — `{kind:"INBODY",draft}` с точными nullable полями и пятью сегментами из
+  [контракта v1](../src/test/resources/ai-contract-v1.json).
+
+UUID канонические lowercase; revisions неотрицательные. Описание 1…2000, имя 1…200;
+типы/мышцы известные, мышцы не повторяются, contribution 0/50/100 и хотя бы один ненулевой.
+Числа конечные и неотрицательные; null означает нераспознанное, не ноль. Полностью пустой
+InBody draft, неизвестные поля/единицы или неразрешимый exercise UUID отклоняются.
+JPEG ≤6MiB decoded / ≤8MiB base64, размеры 1…3072, общий поток запроса ≤10MiB.
+Фото проверяется без disk cache/temp files; пользователь подтверждает передачу в Android.
+
+Перед действием клиент завершает sync и передаёт ACK revision и проверенную catalogRevision.
+Сервер под короткими catalog→owner locks сверяет revision, собирает только разрешённый контекст,
+отпускает транзакцию, вызывает provider, проверяет результат и повторно проверяет обе ревизии
+и текущую сессию. Exercise context содержит live owner/public catalog; InBody — только выбранное
+фото и extraction schema. История здоровья, заметки и другие владельцы не включаются.
+Изменения/архивация/отзыв сессии во время запроса приводят к отказу, а не устаревшему draft.
+Ни один AI endpoint не сохраняет records, head, operations, prompt, фото или ответ. requestId —
+корреляция попытки, не exactly-once/idempotency promise; автоматических retry нет.
+
+Без конфигурации: 503 `ai_unavailable`; устаревшие revisions: 409 `ai_context_stale`;
+контекст >1MiB: 409 `ai_context_too_large`; malformed provider output: 502 `ai_invalid_response`;
+45s timeout: 504 `ai_timeout`; заняты два provider slots: 503 `ai_busy`; upstream failure:
+503 `ai_unavailable`; некорректное фото: 400 `invalid_image`; byte limit: 413 `payload_too_large`.
+Ошибки не содержат upstream body, ключ, модель, URL, prompt или значения здоровья.
+
+Серверный адаптер использует фиксированный HTTPS `/v1/chat/completions`, без redirects,
+stream/store/tools/model fallback и `/models`. Запросы используют strict JSON schema,
+`n=1`, `max_completion_tokens=2048`; допускается ровно один completed assistant choice без
+refusal/tool calls. Connect timeout 5s; response ≤256KiB, весь вызов ≤45s и максимум два
+параллельных provider exchange. Отмена пытается остановить HTTP и не обещает отмену обработки
+или стоимости у провайдера. Совместимость images/strict schema зависит от операторской модели.
+[Create Chat Completion](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create),
+[Structured Outputs](https://developers.openai.com/api/docs/guides/structured-outputs).

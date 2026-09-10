@@ -135,6 +135,12 @@ jobs:
           IMAGE_DIGEST: ${{ needs.publish.outputs.digest }}
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REGISTRY_USER: ${{ github.actor }}
+          AI_ENABLED: ${{ vars.AI_ENABLED }}
+          AI_PROVIDER: ${{ vars.AI_PROVIDER }}
+          AI_BASE_URL: ${{ vars.AI_BASE_URL }}
+          AI_API_KEY: ${{ secrets.AI_API_KEY }}
+          AI_TEXT_MODEL: ${{ vars.AI_TEXT_MODEL }}
+          AI_VISION_MODEL: ${{ vars.AI_VISION_MODEL }}
           MAIL_ENABLED: ${{ vars.MAIL_ENABLED }}
           MAIL_FROM: ${{ secrets.MAIL_FROM }}
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
@@ -145,17 +151,20 @@ jobs:
         run: |
           umask 077
           smtp_payload=$(mktemp)
+          ai_payload=$(mktemp)
           cleanup() {
             if [[ -f ~/.ssh/gym-deploy ]]; then
-              ssh -i ~/.ssh/gym-deploy -o BatchMode=yes -o ConnectTimeout=10 valerochka@62.84.122.55 'rm -f /opt/valerochkagym/incoming/smtp.json' || true
+              ssh -i ~/.ssh/gym-deploy -o BatchMode=yes -o ConnectTimeout=10 valerochka@62.84.122.55 'rm -f /opt/valerochkagym/incoming/smtp.json /opt/valerochkagym/incoming/ai.json' || true
             fi
-            rm -f "$smtp_payload" ~/.ssh/gym-deploy
+            rm -f "$smtp_payload" "$ai_payload" ~/.ssh/gym-deploy
           }
           trap cleanup EXIT
           python3 scripts/smtp-config.py export > "$smtp_payload"
+          python3 scripts/ai-config.py export > "$ai_payload"
           mkdir -p ~/.ssh
           printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/gym-deploy
           printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
-          scp -i ~/.ssh/gym-deploy -o BatchMode=yes infra/compose.production.yaml scripts/deploy.sh scripts/backup.sh scripts/verify-restore.sh scripts/admin-role.sh scripts/admin-password.sh scripts/smtp-config.py valerochka@62.84.122.55:/opt/valerochkagym/incoming/
+          scp -i ~/.ssh/gym-deploy -o BatchMode=yes infra/compose.production.yaml scripts/deploy.sh scripts/backup.sh scripts/verify-restore.sh scripts/admin-role.sh scripts/admin-password.sh scripts/smtp-config.py scripts/ai-config.py valerochka@62.84.122.55:/opt/valerochkagym/incoming/
           scp -i ~/.ssh/gym-deploy -o BatchMode=yes "$smtp_payload" valerochka@62.84.122.55:/opt/valerochkagym/incoming/smtp.json
+          scp -i ~/.ssh/gym-deploy -o BatchMode=yes "$ai_payload" valerochka@62.84.122.55:/opt/valerochkagym/incoming/ai.json
           printf '%s' "$GHCR_TOKEN" | ssh -i ~/.ssh/gym-deploy -o BatchMode=yes valerochka@62.84.122.55 "sudo /opt/valerochkagym/install-and-deploy.sh 'ghcr.io/valerochka1337/valerochkagymbackend@$IMAGE_DIGEST' '$REGISTRY_USER'"

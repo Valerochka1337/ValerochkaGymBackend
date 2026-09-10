@@ -763,6 +763,66 @@
         }
       }
     },
+    "/v1/ai/inbody-drafts": {
+      "post": {
+        "tags": [
+          "ai-controller"
+        ],
+        "operationId": "inbody",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InBodyDraftRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/AiDraftResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/ai/exercise-drafts": {
+      "post": {
+        "tags": [
+          "ai-controller"
+        ],
+        "operationId": "exercise",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExerciseDraftRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/AiDraftResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/admin/api/users/{id}/revoke-sessions": {
       "post": {
         "tags": [
@@ -1188,6 +1248,26 @@
               "*/*": {
                 "schema": {
                   "$ref": "#/components/schemas/CatalogSnapshot"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/ai/status": {
+      "get": {
+        "tags": [
+          "ai-controller"
+        ],
+        "operationId": "status",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/AiStatus"
                 }
               }
             }
@@ -1655,6 +1735,21 @@
       "JsonNode": {
         "type": "object",
         "properties": {
+          "integralNumber": {
+            "type": "boolean"
+          },
+          "floatingPointNumber": {
+            "type": "boolean"
+          },
+          "container": {
+            "type": "boolean"
+          },
+          "object": {
+            "type": "boolean"
+          },
+          "number": {
+            "type": "boolean"
+          },
           "nodeType": {
             "type": "string",
             "enum": [
@@ -1669,12 +1764,6 @@
               "STRING"
             ]
           },
-          "integralNumber": {
-            "type": "boolean"
-          },
-          "floatingPointNumber": {
-            "type": "boolean"
-          },
           "string": {
             "type": "boolean"
           },
@@ -1682,12 +1771,6 @@
             "type": "boolean"
           },
           "valueNode": {
-            "type": "boolean"
-          },
-          "object": {
-            "type": "boolean"
-          },
-          "number": {
             "type": "boolean"
           },
           "short": {
@@ -1710,9 +1793,6 @@
             "type": "boolean"
           },
           "binary": {
-            "type": "boolean"
-          },
-          "container": {
             "type": "boolean"
           },
           "pojo": {
@@ -1946,6 +2026,82 @@
           }
         }
       },
+      "AiImage": {
+        "type": "object",
+        "properties": {
+          "mediaType": {
+            "type": "string"
+          },
+          "base64": {
+            "type": "string"
+          }
+        }
+      },
+      "InBodyDraftRequest": {
+        "type": "object",
+        "properties": {
+          "requestId": {
+            "type": "string"
+          },
+          "expectedRevision": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "expectedCatalogRevision": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "image": {
+            "$ref": "#/components/schemas/AiImage"
+          }
+        }
+      },
+      "AiContextRevision": {
+        "type": "object",
+        "properties": {
+          "revision": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "catalogRevision": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "AiDraftResponse": {
+        "type": "object",
+        "properties": {
+          "requestId": {
+            "type": "string"
+          },
+          "context": {
+            "$ref": "#/components/schemas/AiContextRevision"
+          },
+          "result": {
+            "$ref": "#/components/schemas/JsonNode"
+          }
+        }
+      },
+      "ExerciseDraftRequest": {
+        "type": "object",
+        "properties": {
+          "requestId": {
+            "type": "string"
+          },
+          "expectedRevision": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "expectedCatalogRevision": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "description": {
+            "type": "string"
+          }
+        }
+      },
       "AdminAction": {
         "type": "object",
         "properties": {
@@ -2134,6 +2290,24 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/CatalogRecord"
+            }
+          }
+        }
+      },
+      "AiStatus": {
+        "type": "object",
+        "properties": {
+          "schemaVersion": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "availability": {
+            "type": "string"
+          },
+          "actions": {
+            "type": "array",
+            "items": {
+              "type": "string"
             }
           }
         }
