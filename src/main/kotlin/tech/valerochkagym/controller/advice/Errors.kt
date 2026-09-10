@@ -25,7 +25,15 @@ class Errors {
     HttpMessageNotReadableException::class,
     IllegalArgumentException::class,
   )
-  fun invalid(e: Exception) =
-    ResponseEntity.badRequest()
+  fun invalid(e: Exception): ResponseEntity<ApiError> {
+    // A bounded request stream may be wrapped by Jackson's conversion exception.
+    generateSequence<Throwable>(e) { it.cause }
+      .filterIsInstance<ApiException>()
+      .firstOrNull()
+      ?.let {
+        return api(it)
+      }
+    return ResponseEntity.badRequest()
       .body(ApiError("invalid_request", "Проверьте формат и значения полей"))
+  }
 }

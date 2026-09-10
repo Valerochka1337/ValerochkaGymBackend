@@ -454,6 +454,17 @@ class BackendIntegrationTest {
       assertEquals(0, result.exitCode, result.stderr)
       return result.stdout.trim()
     }
+    fun liquibaseHistory(database: String): String =
+      command(
+        "psql",
+        "-U",
+        postgres.username,
+        "-d",
+        database,
+        "-Atc",
+        "SELECT row_to_json(history)::text FROM databasechangelog history ORDER BY orderexecuted",
+      )
+    val sourceHistory = liquibaseHistory(postgres.databaseName)
     command(
       "pg_dump",
       "-U",
@@ -501,7 +512,7 @@ class BackendIntegrationTest {
         ),
       )
       assertEquals(
-        "7",
+        "15",
         command(
           "psql",
           "-U",
@@ -512,6 +523,7 @@ class BackendIntegrationTest {
           "SELECT count(*) FROM databasechangelog",
         ),
       )
+      assertEquals(sourceHistory, liquibaseHistory("gym_restore_test"))
     } finally {
       command("dropdb", "-U", postgres.username, "gym_restore_test")
     }
@@ -678,6 +690,22 @@ class BackendIntegrationTest {
     val doc = json.readTree(response.body())
     assertTrue(doc["paths"].has("/v1/auth/login"))
     assertTrue(doc["paths"].has("/v1/sync"))
+    for ((path, verbs) in
+      mapOf(
+        "/v1/sync" to listOf("get", "post"),
+        "/v1/sync/changes" to listOf("get"),
+        "/v1/records/{kind}" to listOf("get"),
+        "/v1/records/{kind}/{id}" to listOf("get"),
+      )) {
+      for (verb in verbs) {
+        val responseSchema = doc["paths"][path][verb]["responses"]["200"]
+        assertEquals(
+          "string",
+          responseSchema["headers"]["X-Gym-Capabilities"]["schema"]["type"].asString(),
+        )
+        assertTrue(responseSchema.has("content"))
+      }
+    }
     val output = java.nio.file.Path.of("build/reports/openapi.json")
     java.nio.file.Files.createDirectories(output.parent)
     java.nio.file.Files.writeString(output, response.body())
@@ -917,7 +945,1081 @@ class BackendIntegrationTest {
     )
   }
 
-  data class Reply(val status: Int, val body: JsonNode?)
+  private fun calendarRoutine() =
+    mapOf(
+      "name" to "План",
+      "note" to "",
+      "updatedAt" to 1,
+      "gymIds" to emptyList<String>(),
+      "exercises" to emptyList<Any>(),
+    )
+
+  private fun calendarPush(
+    token: String,
+    rows: List<Any>,
+    operation: UUID = UUID.randomUUID(),
+    capabilities: String? = "calendar-plans",
+    version: String = "2",
+  ) =
+    call(
+      "POST",
+      "/sync",
+      mapOf("operationId" to operation, "changes" to rows),
+      token,
+      version,
+      capabilities,
+    )
+
+  @Test
+  fun `calendar capability filters every read and preserves retries legacy payload and owner isolation`() {
+    val token = account()["accessToken"].asString()
+    val other = account()["accessToken"].asString()
+    val routine = UUID.randomUUID().toString()
+    val plan = UUID.randomUUID().toString()
+    val schedule = UUID.randomUUID().toString()
+    val legacy = mapOf("routineId" to routine, "dateTimeMillis" to 1, "calendarEventId" to "legacy")
+    val rows =
+      listOf(
+        change(routine, payload = calendarRoutine(), kind = "routine"),
+        change(schedule, payload = legacy, kind = "schedule"),
+        change(
+          plan,
+          payload =
+            mapOf(
+              "routineId" to routine,
+              "startsAtMillis" to 0,
+              "timeZoneId" to "UTC",
+              "legacyScheduleId" to schedule,
+            ),
+          kind = "calendar_plan",
+        ),
+      )
+    val operation = UUID.randomUUID()
+    assertEquals(426, calendarPush(token, rows, operation, null).status)
+    assertEquals(426, calendarPush(token, rows, operation, "future-feature").status)
+    assertEquals(0, call("GET", "/sync", token = token).body!!["revision"].asInt())
+    val saved = calendarPush(token, rows, operation, "future-feature, calendar-plans", "3")
+    assertEquals(200, saved.status, saved.toString())
+    assertEquals("calendar-plans", saved.capabilities)
+    assertEquals(saved.body, calendarPush(token, rows, operation).body)
+    assertEquals(409, calendarPush(token, rows.dropLast(1), operation).status)
+    assertEquals(426, calendarPush(token, rows, operation, null).status)
+    assertEquals(2, call("GET", "/sync", token = token).body!!["records"].size())
+    assertEquals(
+      3,
+      call("GET", "/sync", token = token, capabilities = "calendar-plans").body!!["records"].size(),
+    )
+    assertEquals(
+      json.valueToTree(legacy),
+      call("GET", "/records/schedule/$schedule", token = token).body!!["payload"],
+    )
+    assertEquals(0, call("GET", "/records/calendar_plan", token = token).body!!.size())
+    assertEquals(404, call("GET", "/records/calendar_plan/$plan", token = token).status)
+    assertEquals(
+      1,
+      call("GET", "/records/calendar_plan", token = token, capabilities = "calendar-plans")
+        .body!!
+        .size(),
+    )
+    assertEquals(
+      200,
+      call("GET", "/records/calendar_plan/$plan", token = token, capabilities = "calendar-plans")
+        .status,
+    )
+    assertEquals(
+      404,
+      call("GET", "/records/calendar_plan/$plan", token = other, capabilities = "calendar-plans")
+        .status,
+    )
+    assertEquals(
+      0,
+      call("GET", "/sync", token = other, capabilities = "calendar-plans").body!!["records"].size(),
+    )
+    val first = call("GET", "/sync/changes?limit=1", token = token).body!!
+    assertEquals("routine", first["records"][0]["kind"].asString())
+    val last =
+      call("GET", "/sync/changes?limit=1&cursor=${first["nextCursor"].asString()}", token = token)
+        .body!!
+    assertEquals("schedule", last["records"][0]["kind"].asString())
+    assertTrue(last["nextCursor"].isNull)
+    assertEquals(
+      3,
+      call("GET", "/sync/changes", token = token, capabilities = "calendar-plans")
+        .body!!["records"]
+        .size(),
+    )
+    assertEquals(
+      400,
+      calendarPush(
+          other,
+          listOf(
+            change(
+              payload = mapOf("routineId" to routine, "startsAtMillis" to 0, "timeZoneId" to "UTC"),
+              kind = "calendar_plan",
+            )
+          ),
+        )
+        .status,
+    )
+  }
+
+  @Test
+  fun `calendar validates temporal bounds original DST keys and atomic graph deletion`() {
+    val token = account()["accessToken"].asString()
+    val routine = UUID.randomUUID().toString()
+    val rule = UUID.randomUUID().toString()
+    val rulePayload =
+      mapOf(
+        "routineId" to routine,
+        "isoDay" to 7,
+        "localTime" to "02:30",
+        "timeZoneId" to "Europe/Berlin",
+        "startLocalDate" to "1970-01-01",
+        "legacyRuleKey" to "источник",
+      )
+    fun exception(key: String, kind: String = "CANCELLED", moved: Any? = null) =
+      mapOf("ruleId" to rule, "instanceKey" to key, "kind" to kind, "movedAtMillis" to moved)
+    fun exceptionId(key: String) =
+      UUID.nameUUIDFromBytes(
+          "ValerochkaGym.calendar-exception:v1:$rule:$key".toByteArray(Charsets.UTF_8)
+        )
+        .toString()
+    val gap = "2026-03-29T02:30[Europe/Berlin]"
+    val overlap = "2026-10-25T02:30[Europe/Berlin]"
+    val rows =
+      listOf(
+        change(routine, payload = calendarRoutine(), kind = "routine"),
+        change(rule, payload = rulePayload, kind = "calendar_rule"),
+        change(exceptionId(gap), payload = exception(gap), kind = "calendar_exception"),
+        change(
+          exceptionId(overlap),
+          payload = exception(overlap, "MOVED", 0),
+          kind = "calendar_exception",
+        ),
+      )
+    assertEquals(200, calendarPush(token, rows).status)
+    assertEquals(
+      400,
+      calendarPush(
+          token,
+          listOf(change(rule, 1, rulePayload + ("localTime" to "03:30"), "calendar_rule")),
+        )
+        .status,
+    )
+    assertEquals(400, calendarPush(token, listOf(change(rule, 1, null, "calendar_rule"))).status)
+    assertEquals(400, calendarPush(token, listOf(change(routine, 1, null, "routine"))).status)
+    assertEquals(
+      400,
+      calendarPush(token, listOf(change(payload = exception(gap), kind = "calendar_exception")))
+        .status,
+    )
+    for (key in
+      listOf(
+        "2026-03-30T02:30[Europe/Berlin]",
+        "1969-12-28T02:30[Europe/Berlin]",
+        "2026-03-29T03:30[Europe/Berlin]",
+      )) {
+      assertEquals(
+        400,
+        calendarPush(
+            token,
+            listOf(change(exceptionId(key), payload = exception(key), kind = "calendar_exception")),
+          )
+          .status,
+      )
+    }
+    assertEquals(
+      400,
+      calendarPush(
+          token,
+          listOf(change(exceptionId(gap), 1, exception(gap, "CANCELLED", 0), "calendar_exception")),
+        )
+        .status,
+    )
+    assertEquals(
+      400,
+      calendarPush(
+          token,
+          listOf(change(exceptionId(gap), 1, exception(gap, "MOVED", null), "calendar_exception")),
+        )
+        .status,
+    )
+    assertEquals(
+      400,
+      calendarPush(token, listOf(change(payload = rulePayload, kind = "calendar_rule"))).status,
+    )
+    val plan = mapOf("routineId" to routine, "startsAtMillis" to 0, "timeZoneId" to "UTC")
+    for (bad in
+      listOf(
+        plan + ("startsAtMillis" to -1),
+        plan + ("startsAtMillis" to 4133980800000L),
+        plan + ("timeZoneId" to "+03:00"),
+        plan + ("startsAtMillis" to 0.5),
+        plan + ("eventId" to "private"),
+      )) {
+      assertEquals(
+        400,
+        calendarPush(token, listOf(change(payload = bad, kind = "calendar_plan"))).status,
+      )
+    }
+    for (millis in listOf(0L, 4133980799999L)) {
+      assertEquals(
+        200,
+        calendarPush(
+            token,
+            listOf(change(payload = plan + ("startsAtMillis" to millis), kind = "calendar_plan")),
+          )
+          .status,
+      )
+    }
+    // Delete the full rule graph atomically, independent of request ordering.
+    assertEquals(
+      200,
+      calendarPush(
+          token,
+          listOf(
+            change(rule, 1, null, "calendar_rule"),
+            change(exceptionId(gap), 1, null, "calendar_exception"),
+            change(exceptionId(overlap), 1, null, "calendar_exception"),
+          ),
+        )
+        .status,
+    )
+    assertEquals(
+      3,
+      call("GET", "/sync/changes", token = token, capabilities = "calendar-plans")
+        .body!!["records"]
+        .count { it["deleted"].asBoolean() },
+    )
+    assertTrue(
+      call("GET", "/sync/changes", token = token).body!!["records"].all {
+        !it["kind"].asString().startsWith("calendar_")
+      }
+    )
+  }
+
+  @Test
+  fun `calendar checks zone rendered boundaries rule syntax and live source uniqueness`() {
+    val token = account()["accessToken"].asString()
+    val routine = UUID.randomUUID().toString()
+    assertEquals(
+      200,
+      push(token, listOf(change(routine, payload = calendarRoutine(), kind = "routine"))).status,
+    )
+    val rule =
+      mapOf(
+        "routineId" to routine,
+        "isoDay" to 1,
+        "localTime" to "09:00",
+        "timeZoneId" to "UTC",
+        "startLocalDate" to "2100-12-31",
+      )
+    for (payload in
+      listOf(
+        rule + ("isoDay" to 0),
+        rule + ("isoDay" to 8),
+        rule + ("localTime" to "9:00"),
+        rule + ("localTime" to "24:00"),
+        rule + ("startLocalDate" to "2101-01-01"),
+        rule + ("startLocalDate" to "2026-02-30"),
+        rule + ("timeZoneId" to "missing/zone"),
+        rule + ("routineId" to routine.uppercase()),
+      )) {
+      assertEquals(
+        400,
+        calendarPush(token, listOf(change(payload = payload, kind = "calendar_rule"))).status,
+      )
+    }
+    assertEquals(
+      200,
+      calendarPush(token, listOf(change(payload = rule, kind = "calendar_rule"))).status,
+    )
+    val source = UUID.randomUUID().toString()
+    val plan =
+      mapOf(
+        "routineId" to routine,
+        "startsAtMillis" to -3600000L,
+        "timeZoneId" to "Europe/Berlin",
+        "legacyScheduleId" to source,
+      )
+    assertEquals(
+      200,
+      calendarPush(token, listOf(change(payload = plan, kind = "calendar_plan"))).status,
+    )
+    assertEquals(
+      400,
+      calendarPush(token, listOf(change(payload = plan, kind = "calendar_plan"))).status,
+    )
+    assertEquals(
+      400,
+      calendarPush(
+          token,
+          listOf(
+            change(
+              payload = plan + mapOf("startsAtMillis" to -3600001L, "legacyScheduleId" to null),
+              kind = "calendar_plan",
+            )
+          ),
+        )
+        .status,
+    )
+    assertEquals(
+      400,
+      calendarPush(
+          token,
+          listOf(
+            change(
+              payload =
+                plan +
+                  mapOf(
+                    "startsAtMillis" to 4133980799999L,
+                    "timeZoneId" to "Pacific/Kiritimati",
+                    "legacyScheduleId" to null,
+                  ),
+              kind = "calendar_plan",
+            )
+          ),
+        )
+        .status,
+    )
+    val ruleId = UUID.randomUUID().toString()
+    val activeRule = rule + mapOf("isoDay" to 7, "startLocalDate" to "1970-01-01")
+    assertEquals(
+      200,
+      calendarPush(token, listOf(change(ruleId, payload = activeRule, kind = "calendar_rule")))
+        .status,
+    )
+    val key = "2026-03-29T09:00[UTC]"
+    val id =
+      UUID.nameUUIDFromBytes(
+          "ValerochkaGym.calendar-exception:v1:$ruleId:$key".toByteArray(Charsets.UTF_8)
+        )
+        .toString()
+    val moved =
+      mapOf(
+        "ruleId" to ruleId,
+        "instanceKey" to key,
+        "kind" to "MOVED",
+        "movedAtMillis" to 4133980800000L,
+      )
+    assertEquals(
+      400,
+      calendarPush(token, listOf(change(id, payload = moved, kind = "calendar_exception"))).status,
+    )
+    assertEquals(
+      200,
+      calendarPush(
+          token,
+          listOf(
+            change(
+              id,
+              payload = moved + ("movedAtMillis" to 4133980799999L),
+              kind = "calendar_exception",
+            )
+          ),
+        )
+        .status,
+    )
+  }
+
+  @Test
+  fun `calendar refuses resurrecting deleted rule identity and keeps operation retry valid`() {
+    val token = account()["accessToken"].asString()
+    val routine = UUID.randomUUID().toString()
+    val rule = UUID.randomUUID().toString()
+    val payload =
+      mapOf(
+        "routineId" to routine,
+        "isoDay" to 1,
+        "localTime" to "09:00",
+        "timeZoneId" to "UTC",
+        "startLocalDate" to "2026-01-01",
+      )
+    assertEquals(
+      200,
+      calendarPush(
+          token,
+          listOf(
+            change(routine, payload = calendarRoutine(), kind = "routine"),
+            change(rule, payload = payload, kind = "calendar_rule"),
+          ),
+        )
+        .status,
+    )
+    val operation = UUID.randomUUID()
+    val deleted = listOf(change(rule, 1, null, "calendar_rule"))
+    val result = calendarPush(token, deleted, operation)
+    assertEquals(200, result.status)
+    assertEquals(result.body, calendarPush(token, deleted, operation).body)
+    for (changed in
+      listOf(
+        payload,
+        payload + ("isoDay" to 2),
+        payload + ("localTime" to "10:00"),
+        payload + ("timeZoneId" to "Europe/Berlin"),
+        payload + ("startLocalDate" to "2026-02-01"),
+      )) {
+      assertEquals(
+        400,
+        calendarPush(token, listOf(change(rule, 2, changed, "calendar_rule"))).status,
+      )
+    }
+    val snapshot = call("GET", "/sync", token = token, capabilities = "calendar-plans").body!!
+    assertEquals(2, snapshot["revision"].asInt())
+    assertTrue(snapshot["records"].first { it["id"].asString() == rule }["deleted"].asBoolean())
+    assertEquals(
+      200,
+      calendarPush(
+          token,
+          listOf(change(payload = payload + ("localTime" to "10:00"), kind = "calendar_rule")),
+        )
+        .status,
+    )
+  }
+
+  @Test
+  fun `calendar requires canonical aggregate UUID spelling while legacy accepts uppercase`() {
+    val token = account()["accessToken"].asString()
+    val routine = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    assertEquals(
+      200,
+      push(
+          token,
+          listOf(change(routine.uppercase(), payload = calendarRoutine(), kind = "routine")),
+        )
+        .status,
+    )
+    for (kind in listOf("calendar_plan", "calendar_rule", "calendar_exception")) {
+      assertEquals(
+        400,
+        calendarPush(
+            token,
+            listOf(
+              change(
+                "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb".uppercase(),
+                payload = null,
+                kind = kind,
+              )
+            ),
+          )
+          .status,
+      )
+    }
+    assertEquals(1, call("GET", "/sync", token = token).body!!["revision"].asInt())
+    assertEquals(
+      200,
+      calendarPush(
+          token,
+          listOf(
+            change(
+              "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+              payload = mapOf("routineId" to routine, "startsAtMillis" to 0, "timeZoneId" to "UTC"),
+              kind = "calendar_plan",
+            )
+          ),
+        )
+        .status,
+    )
+  }
+
+  @Test
+  fun `calendar contract fixture is frozen`() {
+    val bytes = javaClass.getResourceAsStream("/cal01-sync-contract.json")!!.readAllBytes()
+    val hash =
+      java.security.MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") {
+        "%02x".format(it)
+      }
+    assertEquals("d841e2a65037ef94993575ac2dea4172ffaa272cdde63baa2a6867ba0ed29911", hash)
+    assertEquals("calendar-plans", json.readTree(bytes)["capability"].asString())
+  }
+
+  private val notesCapabilities = "calendar-plans,annotated-workout-writes,exercise-hint"
+
+  private fun notesPush(
+    token: String,
+    changes: List<Any>,
+    operation: String = UUID.randomUUID().toString(),
+    capabilities: String? = notesCapabilities,
+  ) =
+    call(
+      "POST",
+      "/sync",
+      mapOf("operationId" to operation, "changes" to changes),
+      token,
+      capabilities = capabilities,
+    )
+
+  private fun notedWorkout(note: String = "Держать спину"): JsonNode {
+    val fixture = json.readTree(javaClass.getResourceAsStream("/android-snapshot.json")!!)
+    val payload = fixture["records"][1]["payload"].deepCopy()
+    (payload["exercises"][0]["sets"][0] as tools.jackson.databind.node.ObjectNode).put("note", note)
+    (payload as tools.jackson.databind.node.ObjectNode).put("note", "Старая заметка тренировки")
+    return payload
+  }
+
+  @Test
+  fun `notes project only set annotations on every legacy read and protect atomic writes`() {
+    val token = account()["accessToken"].asString()
+    val exercise = "00000000-0000-0000-0000-000000000001"
+    val workout = "00000000-0000-0000-0000-000000000002"
+    val payload = notedWorkout()
+    assertEquals(
+      200,
+      notesPush(
+          token,
+          listOf(change(exercise), change(workout, payload = payload, kind = "workout")),
+        )
+        .status,
+    )
+    for (caps in listOf(null, "calendar-plans")) {
+      for (path in
+        listOf(
+          "/sync",
+          "/sync/changes?limit=100",
+          "/records/workout",
+          "/records/workout/$workout",
+        )) {
+        val response = call("GET", path, token = token, capabilities = caps)
+        assertEquals(200, response.status)
+        val records =
+          if (path == "/records/workout/$workout") listOf(response.body!!)
+          else if (path == "/records/workout") response.body!!.toList()
+          else response.body!!["records"].toList()
+        val projected = records.first { it["kind"].asString() == "workout" }["payload"]
+        val expected = payload.deepCopy()
+        (expected["exercises"][0]["sets"][0] as tools.jackson.databind.node.ObjectNode).remove(
+          "note"
+        )
+        assertEquals(expected, projected, path)
+      }
+    }
+    assertEquals(
+      payload,
+      call("GET", "/records/workout/$workout", token = token, capabilities = notesCapabilities)
+        .body!!["payload"],
+    )
+    val without = payload.deepCopy()
+    (without["exercises"][0]["sets"][0] as tools.jackson.databind.node.ObjectNode).remove("note")
+    for (next in listOf(without, notedWorkout("Новая непустая заметка"), null)) {
+      val operation = UUID.randomUUID().toString()
+      val changes = listOf(change(workout, 1, next, "workout"), change())
+      val rejected = notesPush(token, changes, operation, null)
+      assertEquals(409, rejected.status, rejected.toString())
+      assertEquals("annotated_workout_requires_capability", rejected.body!!["code"].asString())
+      assertEquals(1, db.queryForObject("SELECT count(*) FROM sync_operations", Int::class.java))
+      assertEquals(1L, call("GET", "/sync", token = token).body!!["revision"].asLong())
+      assertEquals(2, db.queryForObject("SELECT count(*) FROM records", Int::class.java))
+    }
+    assertEquals(200, push(token, listOf(change())).status)
+    val op = UUID.randomUUID().toString()
+    val deletion = listOf(change(workout, 1, null, "workout"))
+    val accepted = notesPush(token, deletion, op)
+    assertEquals(200, accepted.status)
+    assertEquals(accepted.body, notesPush(token, deletion, op).body)
+
+    val emptyOwner = account()["accessToken"].asString()
+    assertEquals(
+      200,
+      notesPush(
+          emptyOwner,
+          listOf(change(exercise), change(workout, payload = notedWorkout(""), kind = "workout")),
+        )
+        .status,
+    )
+    val ledgerBefore = db.queryForObject("SELECT count(*) FROM sync_operations", Int::class.java)
+    val emptySnapshot =
+      call("GET", "/sync", token = emptyOwner, capabilities = notesCapabilities).body
+    val rejectedNewNote =
+      notesPush(
+        emptyOwner,
+        listOf(change(workout, 1, notedWorkout("Первая заметка"), "workout")),
+        capabilities = null,
+      )
+    assertEquals(409, rejectedNewNote.status)
+    assertEquals("annotated_workout_requires_capability", rejectedNewNote.body!!["code"].asString())
+    assertEquals(
+      ledgerBefore,
+      db.queryForObject("SELECT count(*) FROM sync_operations", Int::class.java),
+    )
+    assertEquals(
+      emptySnapshot,
+      call("GET", "/sync", token = emptyOwner, capabilities = notesCapabilities).body,
+    )
+  }
+
+  @Test
+  fun `notes hints use capability intersection owner isolation and filtered cursors`() {
+    val token = account()["accessToken"].asString()
+    val other = account()["accessToken"].asString()
+    val ex = UUID.randomUUID().toString()
+    val hint = mapOf("text" to "Личная подсказка", "updatedAt" to 0)
+    val op = UUID.randomUUID().toString()
+    val mixed = listOf(change(ex), change(ex, payload = hint, kind = "exercise_hint"))
+    assertEquals(426, notesPush(token, mixed, op, "calendar-plans").status)
+    assertEquals(0, db.queryForObject("SELECT count(*) FROM sync_operations", Int::class.java))
+    val accepted = notesPush(token, mixed, op)
+    assertEquals(200, accepted.status, accepted.toString())
+    assertEquals(accepted.body, notesPush(token, mixed, op).body)
+    assertEquals(
+      404,
+      call("GET", "/records/exercise_hint/$ex", token = other, capabilities = notesCapabilities)
+        .status,
+    )
+    assertEquals(404, call("GET", "/records/exercise_hint/$ex", token = token).status)
+    assertEquals(0, call("GET", "/records/exercise_hint", token = token).body!!.size())
+    val page = call("GET", "/sync/changes?limit=1", token = token).body!!
+    assertEquals(1, page["records"].size())
+    assertTrue(page["nextCursor"].isNull)
+    assertEquals("exercise", page["records"][0]["kind"].asString())
+    val visible =
+      call(
+        "GET",
+        "/sync/changes?limit=1",
+        token = token,
+        capabilities = "exercise-hint, unknown, exercise-hint",
+      )
+    assertEquals("exercise-hint", visible.capabilities)
+    val cursor = visible.body!!["nextCursor"].asString()
+    assertEquals(
+      "exercise_hint",
+      call(
+          "GET",
+          "/sync/changes?limit=1&cursor=$cursor",
+          token = token,
+          capabilities = notesCapabilities,
+        )
+        .body!!["records"][0]["kind"]
+        .asString(),
+    )
+    val beforeConflict = call("GET", "/sync", token = token, capabilities = notesCapabilities).body
+    val ledgerBeforeConflict =
+      db.queryForObject("SELECT count(*) FROM sync_operations", Int::class.java)
+    val staleHint =
+      notesPush(
+        token,
+        listOf(
+          change(ex, 0, hint + ("text" to "Устаревшая правка"), "exercise_hint"),
+          change(ex, 1, exercise("Не должно сохраниться")),
+        ),
+      )
+    assertEquals(409, staleHint.status)
+    assertEquals("revision_conflict", staleHint.body!!["code"].asString())
+    assertEquals(
+      ledgerBeforeConflict,
+      db.queryForObject("SELECT count(*) FROM sync_operations", Int::class.java),
+    )
+    assertEquals(
+      beforeConflict,
+      call("GET", "/sync", token = token, capabilities = notesCapabilities).body,
+    )
+    assertEquals(200, push(token, listOf(change(ex, 1, null))).status)
+    assertEquals(
+      hint["text"],
+      call("GET", "/records/exercise_hint/$ex", token = token, capabilities = notesCapabilities)
+        .body!!["payload"]["text"]
+        .asString(),
+    )
+    assertEquals(
+      400,
+      notesPush(token, listOf(change(ex, 1, hint + ("updatedAt" to 1), "exercise_hint"))).status,
+    )
+    val exerciseBeforeHintDelete =
+      call("GET", "/sync", token = token, capabilities = notesCapabilities)
+        .body!!["records"]
+        .first { it["kind"].asString() == "exercise" }
+    assertEquals(200, notesPush(token, listOf(change(ex, 1, null, "exercise_hint"))).status)
+    for (caps in listOf(null, notesCapabilities)) {
+      assertEquals(
+        404,
+        call("GET", "/records/exercise_hint/$ex", token = token, capabilities = caps).status,
+      )
+      assertEquals(
+        0,
+        call("GET", "/records/exercise_hint", token = token, capabilities = caps).body!!.size(),
+      )
+      val changes =
+        call("GET", "/sync/changes?after=2&limit=1", token = token, capabilities = caps).body!!
+      assertEquals(3L, changes["revision"].asLong())
+      assertTrue(changes["nextCursor"].isNull)
+      val snapshot = call("GET", "/sync", token = token, capabilities = caps).body!!["records"]
+      assertEquals(exerciseBeforeHintDelete, snapshot.first { it["kind"].asString() == "exercise" })
+      if (caps == null) {
+        assertEquals(0, changes["records"].size())
+        assertFalse(snapshot.any { it["kind"].asString() == "exercise_hint" })
+      } else {
+        val tombstone = changes["records"].single()
+        assertEquals("exercise_hint", tombstone["kind"].asString())
+        assertEquals(ex, tombstone["id"].asString())
+        assertTrue(tombstone["deleted"].asBoolean())
+        assertTrue(tombstone["payload"].isNull)
+        assertEquals(tombstone, snapshot.first { it["kind"].asString() == "exercise_hint" })
+      }
+    }
+  }
+
+  @Test
+  fun `notes hints allow standard identity without catalog mutation and reject unavailable references`() {
+    val token = account()["accessToken"].asString()
+    val browser = administrator()
+    val ex = UUID.randomUUID().toString()
+    val path = "/api/standard/exercise/$ex"
+    assertEquals(
+      200,
+      adminCall(
+          "PUT",
+          path,
+          mapOf(
+            "operationId" to UUID.randomUUID(),
+            "baseRevision" to 0,
+            "reason" to "Создать",
+            "payload" to exercise(),
+          ),
+          browser,
+        )
+        .status,
+    )
+    val hint = mapOf("text" to "Моя техника", "updatedAt" to 1)
+    assertEquals(
+      200,
+      notesPush(token, listOf(change(ex, payload = hint, kind = "exercise_hint"))).status,
+    )
+    assertEquals(403, notesPush(token, listOf(change(ex))).status)
+    assertEquals(
+      200,
+      adminCall(
+          "POST",
+          "$path/archive",
+          mapOf("operationId" to UUID.randomUUID(), "baseRevision" to 1, "reason" to "Архив"),
+          browser,
+        )
+        .status,
+    )
+    assertEquals(
+      400,
+      notesPush(token, listOf(change(ex, 1, hint + ("text" to "Правка"), "exercise_hint"))).status,
+    )
+    assertEquals(200, notesPush(token, listOf(change(ex, 1, null, "exercise_hint"))).status)
+    assertEquals(
+      400,
+      notesPush(token, listOf(change(payload = hint, kind = "exercise_hint"))).status,
+    )
+    val ownerEx = UUID.randomUUID().toString()
+    val other = account()["accessToken"].asString()
+    assertEquals(200, push(other, listOf(change(ownerEx))).status)
+    assertEquals(
+      400,
+      notesPush(token, listOf(change(ownerEx, payload = hint, kind = "exercise_hint"))).status,
+    )
+  }
+
+  @Test
+  fun `notes validate Unicode bounds trimmed text canonical hint UUID and frozen fixture`() {
+    val token = account()["accessToken"].asString()
+    val ex = "00000000-0000-0000-0000-000000000001"
+    assertEquals(200, push(token, listOf(change(ex))).status)
+    val emoji = "😀".repeat(2000)
+    assertEquals(
+      200,
+      notesPush(token, listOf(change(payload = notedWorkout(emoji), kind = "workout"))).status,
+    )
+    for (note in listOf("😀".repeat(2001), " trim ")) {
+      assertEquals(
+        400,
+        notesPush(token, listOf(change(payload = notedWorkout(note), kind = "workout"))).status,
+      )
+    }
+    for (text in listOf("", " ", " trim ", "😀".repeat(2001))) {
+      assertEquals(
+        400,
+        notesPush(
+            token,
+            listOf(
+              change(ex, payload = mapOf("text" to text, "updatedAt" to 0), kind = "exercise_hint")
+            ),
+          )
+          .status,
+      )
+    }
+    assertEquals(
+      400,
+      notesPush(
+          token,
+          listOf(
+            change(ex, payload = mapOf("text" to "ok", "updatedAt" to -1), kind = "exercise_hint")
+          ),
+        )
+        .status,
+    )
+    assertEquals(
+      400,
+      notesPush(
+          token,
+          listOf(
+            change(
+              "ABCDEF00-0000-0000-0000-000000000001",
+              payload = mapOf("text" to "ok", "updatedAt" to 0),
+              kind = "exercise_hint",
+            )
+          ),
+        )
+        .status,
+    )
+    assertEquals(
+      200,
+      notesPush(
+          token,
+          listOf(
+            change(ex, payload = mapOf("text" to emoji, "updatedAt" to 0), kind = "exercise_hint")
+          ),
+        )
+        .status,
+    )
+    val legacy = notedWorkout("")
+    (legacy as tools.jackson.databind.node.ObjectNode).put("note", "x".repeat(10000))
+    (legacy["exercises"][0] as tools.jackson.databind.node.ObjectNode).put(
+      "sectionId",
+      UUID.randomUUID().toString(),
+    )
+    (legacy["exercises"][1] as tools.jackson.databind.node.ObjectNode).put(
+      "sectionId",
+      UUID.randomUUID().toString(),
+    )
+    assertEquals(
+      200,
+      notesPush(token, listOf(change(payload = legacy, kind = "workout")), capabilities = null)
+        .status,
+    )
+    for (value in listOf<Any?>(null, 3, true)) {
+      val invalid = notedWorkout()
+      (invalid["exercises"][0]["sets"][0] as tools.jackson.databind.node.ObjectNode).set(
+        "note",
+        json.valueToTree(value),
+      )
+      assertEquals(
+        400,
+        notesPush(token, listOf(change(payload = invalid, kind = "workout"))).status,
+      )
+    }
+    val bytes = javaClass.getResourceAsStream("/workout-notes-sync-contract.json")!!.readAllBytes()
+    assertEquals(
+      "5a98f491bbb658c76e47933b49b50041fe1f1a16618b9cadfcf1befdbd22818b",
+      java.security.MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") {
+        "%02x".format(it)
+      },
+    )
+  }
+
+  private fun profilePayload(owner: String): tools.jackson.databind.node.ObjectNode =
+    (json
+        .readTree(javaClass.getResourceAsStream("/basic-profile-sync-contract.json"))[
+          "emptyPayload"]
+        .deepCopy() as tools.jackson.databind.node.ObjectNode)
+      .also {
+        it.put("syncId", tech.valerochkagym.service.data.ProfileIdentity.syncId(owner).toString())
+      }
+
+  private fun profilePush(token: String, changes: List<Any>, capabilities: String? = "profile") =
+    call(
+      "POST",
+      "/sync",
+      mapOf("operationId" to UUID.randomUUID(), "changes" to changes),
+      token,
+      capabilities = capabilities,
+    )
+
+  @Test
+  fun `profile capability filters reads before pagination and preserves singleton through clear and conflicts`() {
+    val owner = account()
+    val token = owner["accessToken"].asString()
+    val payload = profilePayload(owner["userId"].asString())
+    val id = payload["syncId"].asString()
+    val exerciseId = UUID.randomUUID().toString()
+    assertEquals(
+      200,
+      profilePush(
+          token,
+          listOf(change(id, payload = payload, kind = "profile"), change(exerciseId)),
+        )
+        .status,
+    )
+    for (caps in listOf(null, "calendar-plans,annotated-workout-writes,exercise-hint")) {
+      val snapshot = call("GET", "/sync", token = token, capabilities = caps)
+      assertEquals(1, snapshot.body!!["records"].size())
+      val page =
+        call("GET", "/sync/changes?after=0&limit=1", token = token, capabilities = caps).body!!
+      assertEquals("exercise", page["records"][0]["kind"].asString())
+      assertTrue(page["nextCursor"].isNull)
+      assertEquals(
+        0,
+        call("GET", "/records/profile", token = token, capabilities = caps).body!!.size(),
+      )
+      assertEquals(
+        404,
+        call("GET", "/records/profile/$id", token = token, capabilities = caps).status,
+      )
+    }
+    assertEquals(
+      2,
+      call("GET", "/sync", token = token, capabilities = "profile").body!!["records"].size(),
+    )
+    assertEquals(
+      1,
+      call("GET", "/records/profile", token = token, capabilities = "profile").body!!.size(),
+    )
+    assertEquals(
+      200,
+      call("GET", "/records/profile/$id", token = token, capabilities = "profile").status,
+    )
+    val foreign = account()["accessToken"].asString()
+    assertEquals(
+      404,
+      call("GET", "/records/profile/$id", token = foreign, capabilities = "profile").status,
+    )
+    assertEquals(
+      400,
+      profilePush(foreign, listOf(change(id, payload = payload, kind = "profile"))).status,
+    )
+    assertEquals(
+      409,
+      profilePush(token, listOf(change(id, payload = payload, kind = "profile"))).status,
+    )
+    val beforeReject = call("GET", "/sync", token = token, capabilities = "profile").body
+    val ledger = db.queryForObject("SELECT count(*) FROM sync_operations", Int::class.java)
+    for (caps in listOf(null, "profile")) {
+      assertEquals(
+        400,
+        profilePush(
+            token,
+            listOf(change(id, 1, null, "profile"), change(exerciseId, 1, exercise("UNCHANGED"))),
+            caps,
+          )
+          .status,
+      )
+      assertEquals(beforeReject, call("GET", "/sync", token = token, capabilities = "profile").body)
+      assertEquals(
+        ledger,
+        db.queryForObject("SELECT count(*) FROM sync_operations", Int::class.java),
+      )
+    }
+    val firstPage =
+      call("GET", "/sync/changes?after=0&limit=1", token = token, capabilities = "profile")
+    assertEquals("profile", firstPage.capabilities)
+    val cursor = firstPage.body!!["nextCursor"].asString()
+    val secondPage =
+      call(
+          "GET",
+          "/sync/changes?after=0&limit=1&cursor=$cursor",
+          token = token,
+          capabilities = "profile",
+        )
+        .body!!
+    assertEquals("profile", secondPage["records"][0]["kind"].asString())
+    assertTrue(secondPage["nextCursor"].isNull)
+    payload.put("trainingGoal", "STRENGTH")
+    assertEquals(200, profilePush(token, listOf(change(id, 1, payload, "profile"))).status)
+    assertEquals(
+      200,
+      profilePush(
+          token,
+          listOf(change(id, 2, profilePayload(owner["userId"].asString()), "profile")),
+        )
+        .status,
+    )
+    assertEquals(
+      1,
+      db.queryForObject("SELECT count(*) FROM records WHERE kind='profile'", Int::class.java),
+    )
+  }
+
+  @Test
+  fun `profile invalid payload and tombstones leave ledger and revision unchanged`() {
+    val owner = account()
+    val token = owner["accessToken"].asString()
+    val payload = profilePayload(owner["userId"].asString())
+    val id = payload["syncId"].asString()
+    assertEquals(
+      426,
+      profilePush(token, listOf(change(id, payload = payload, kind = "profile")), null).status,
+    )
+    assertEquals(0, db.queryForObject("SELECT count(*) FROM sync_operations", Int::class.java))
+    assertEquals(0, call("GET", "/sync", token = token).body!!["revision"].asInt())
+    for (caps in listOf(null, "profile")) assertEquals(
+      400,
+      profilePush(token, listOf(change(id, payload = null, kind = "profile")), caps).status,
+    )
+    assertEquals(
+      400,
+      profilePush(token, listOf(change(payload = payload, kind = "profile"))).status,
+    )
+    assertEquals(
+      400,
+      profilePush(token, listOf(change(id.uppercase(), payload = payload, kind = "profile"))).status,
+    )
+    val badValues =
+      listOf(
+        "updatedAt" to java.math.BigInteger("9223372036854775808"),
+        "schemaVersion" to 2,
+        "schemaVersion" to null,
+        "updatedAt" to -1,
+        "trainingGoal" to "UNKNOWN",
+        "sex" to "UNKNOWN",
+        "experienceLevel" to "UNKNOWN",
+        "birthDate" to "1899-12-31",
+        "birthDate" to "2100-01-01",
+        "birthDate" to "2001-02-29",
+        "plannedSessionsPerWeek" to 0,
+        "plannedSessionsPerWeek" to 8,
+        "plannedSessionsPerWeek" to 1.5,
+        "preferredSessionDurationMinutes" to 9,
+        "preferredSessionDurationMinutes" to 241,
+        "manualConstraints" to " ",
+        "manualConstraints" to " x",
+        "manualConstraints" to "😀".repeat(2001),
+        "equipmentIds" to listOf("invalid"),
+        "equipmentIds" to listOf("barbell", "adjustable_bench"),
+        "equipmentIds" to listOf("adjustable_bench", "adjustable_bench"),
+        "extra" to true,
+      )
+    for ((key, value) in badValues) {
+      val invalid = payload.deepCopy()
+      invalid.set(key, json.valueToTree(value))
+      val result = profilePush(token, listOf(change(id, payload = invalid, kind = "profile")))
+      assertEquals(400, result.status, "$key=$value: $result")
+    }
+    for (key in payload.properties().map { it.key }) {
+      val invalid = payload.deepCopy()
+      invalid.remove(key)
+      assertEquals(
+        400,
+        profilePush(token, listOf(change(id, payload = invalid, kind = "profile"))).status,
+        key,
+      )
+    }
+    assertEquals(0, db.queryForObject("SELECT count(*) FROM sync_operations", Int::class.java))
+    assertEquals(0, call("GET", "/sync", token = token).body!!["revision"].asInt())
+    payload.put("birthDate", "2000-02-29")
+    payload.put("manualConstraints", "😀".repeat(2000))
+    payload.put("plannedSessionsPerWeek", 7)
+    payload.put("preferredSessionDurationMinutes", 240)
+    assertEquals(
+      200,
+      profilePush(token, listOf(change(id, payload = payload, kind = "profile"))).status,
+    )
+    val fixture =
+      javaClass.getResourceAsStream("/basic-profile-sync-contract.json")!!.readAllBytes()
+    assertEquals(
+      "1bec288ad8d841efaf645af13ac5ea1cbe2b53c841846589c8101cfe3f524ed6",
+      java.security.MessageDigest.getInstance("SHA-256").digest(fixture).joinToString("") {
+        "%02x".format(it)
+      },
+    )
+    assertEquals(
+      "9e27b903-8c27-34a4-82fa-164c43cf1212",
+      tech.valerochkagym.service.data.ProfileIdentity.syncId("owner-7").toString(),
+    )
+  }
+
+  data class Reply(val status: Int, val body: JsonNode?, val capabilities: String? = null)
 
   private fun call(
     method: String,
@@ -925,12 +2027,14 @@ class BackendIntegrationTest {
     body: Any? = null,
     token: String? = null,
     version: String? = null,
+    capabilities: String? = null,
   ): Reply {
     val builder =
       HttpRequest.newBuilder(URI("http://localhost:$port/v1$path"))
         .header("Content-Type", "application/json")
     if (token != null) builder.header("Authorization", "Bearer $token")
     if (version != null) builder.header("X-Gym-Sync-Version", version)
+    if (capabilities != null) builder.header("X-Gym-Capabilities", capabilities)
     val response =
       client.send(
         builder
@@ -945,13 +2049,15 @@ class BackendIntegrationTest {
     return Reply(
       response.statusCode(),
       response.body().takeIf { it.isNotBlank() }?.let(json::readTree),
+      response.headers().firstValue("X-Gym-Capabilities").orElse(null),
     )
   }
 
   @BeforeEach
   fun clean() {
+    // Match AuthService.cleanup lock order: its initial scheduled run can overlap fixture reset.
     db.execute(
-      "TRUNCATE users,rate_limits,email_challenges,google_nonces,admin_audit,standard_records CASCADE"
+      "TRUNCATE sessions,refresh_tokens,email_challenges,google_nonces,rate_limits,users,admin_audit,standard_records CASCADE"
     )
     db.update(
       "UPDATE catalog_state SET revision=0,active=false,source_user_id=NULL,activated_at=NULL"
@@ -1076,7 +2182,7 @@ class BackendIntegrationTest {
   @Test
   fun `expired access cannot read data`() {
     val a = account()
-    db.update("UPDATE sessions SET access_expires_at=now()-interval '1 second'")
+    db.update("UPDATE sessions SET access_expires_at=TIMESTAMPTZ '2000-01-01 00:00:00+00'")
     assertEquals(401, call("GET", "/sync", token = a["accessToken"].asString()).status)
   }
 
@@ -1178,7 +2284,7 @@ class BackendIntegrationTest {
 
   @Test
   fun `Liquibase has applied auth sync and admin changesets`() {
-    assertEquals(7, db.queryForObject("SELECT count(*) FROM databasechangelog", Int::class.java))
+    assertEquals(15, db.queryForObject("SELECT count(*) FROM databasechangelog", Int::class.java))
   }
 
   @Test
@@ -1359,7 +2465,7 @@ class BackendIntegrationTest {
     db.update("UPDATE users SET is_admin=false WHERE id=?", browser.userId)
     assertEquals(401, adminCall("GET", "/api/users", browser = browser).status)
     db.update("UPDATE users SET is_admin=true WHERE id=?", browser.userId)
-    db.update("UPDATE admin_sessions SET expires_at=now()-interval '1 second'")
+    db.update("UPDATE admin_sessions SET expires_at=TIMESTAMPTZ '2000-01-01 00:00:00+00'")
     assertEquals(401, adminCall("GET", "/api/users", browser = browser).status)
   }
 

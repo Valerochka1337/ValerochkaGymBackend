@@ -117,3 +117,25 @@ PostgreSQL upsert и атомарные операции изолированы 
 
 [Контракт каталога, админка и порядок перехода Android](docs/catalog-transition.md).
 Переход выключен до явного запуска команды переноса.
+
+## Серверные AI-черновики (default off)
+
+AI exercise/InBody доступен только через авторизованный backend; ручные сценарии и sync работают
+при `AI_ENABLED=false`. Для включения оператор задаёт **все** значения `AI_ENABLED=true`,
+`AI_PROVIDER=openai`, `AI_BASE_URL` (HTTPS origin либо `/v1`), `AI_API_KEY`, `AI_TEXT_MODEL`,
+`AI_VISION_MODEL`. Модель должна поддерживать strict JSON schema, а vision — JPEG image input.
+У ключа/моделей/endpoint нет значений по умолчанию. Android не передаёт BYOK ключ, URL, model
+или готовый prompt. Статус AVAILABLE сообщает о конфигурации и не гарантирует live API.
+
+CD читает environment `production`: `AI_API_KEY` — secret, остальные `AI_*` — variables;
+если AI_ENABLED не задан, доставка явно выключает AI. `scripts/ai-config.py export` предназначен
+только для перенаправления в private temporary payload; нельзя выводить результат в CI log.
+Workflow доставляет его отдельным файлом с umask077, удаляет локальный/удалённый payload через
+trap; deploy атомарно обновляет только AI-поля `.env`, остальные значения сохраняет. `.env`
+нельзя source: используется Compose quoting. При откате возвращается прежнее окружение.
+Доставка и тесты работают с dummy credentials; production AI не проверялся этой реализацией.
+
+Контракт и ошибки — [docs/api.md](docs/api.md), frozen DTO —
+[src/test/resources/ai-contract-v1.json](src/test/resources/ai-contract-v1.json).
+Тестовый путь: targeted `AiIntegrationTest`, `AiActionServiceTest`,
+`HttpOpenAiChatCompletionsProviderTest` и `python3 -m unittest discover -s scripts/tests`.

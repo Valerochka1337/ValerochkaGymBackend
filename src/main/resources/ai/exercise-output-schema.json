@@ -1,0 +1,116 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "result": {
+      "anyOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "exerciseId": {
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "type": "string"
+            },
+            "kind": {
+              "enum": [
+                "EXISTING"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "exerciseId"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "enum": [
+                "NEW"
+              ],
+              "type": "string"
+            },
+            "muscles": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "contribution": {
+                    "enum": [
+                      0,
+                      50,
+                      100
+                    ],
+                    "type": "integer"
+                  },
+                  "muscle": {
+                    "enum": [
+                      "UPPER_CHEST",
+                      "LOWER_CHEST",
+                      "FRONT_DELTS",
+                      "SIDE_DELTS",
+                      "REAR_DELTS",
+                      "ROTATOR_CUFF",
+                      "SERRATUS_ANTERIOR",
+                      "BICEPS",
+                      "TRICEPS",
+                      "FOREARMS",
+                      "ABS",
+                      "OBLIQUES",
+                      "HIP_FLEXORS",
+                      "ADDUCTORS",
+                      "QUADS",
+                      "TIBIALIS_ANTERIOR",
+                      "CALVES",
+                      "HAMSTRINGS",
+                      "GLUTES",
+                      "HIP_ABDUCTORS",
+                      "LOWER_BACK",
+                      "LATS",
+                      "UPPER_BACK",
+                      "TRAPS",
+                      "NECK"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "muscle",
+                  "contribution"
+                ],
+                "type": "object"
+              },
+              "minItems": 1,
+              "type": "array"
+            },
+            "name": {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "STRENGTH",
+                "TIMED",
+                "CARDIO"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "name",
+            "type",
+            "muscles"
+          ],
+          "type": "object"
+        }
+      ]
+    }
+  },
+  "required": [
+    "result"
+  ],
+  "type": "object"
+}

@@ -8,7 +8,11 @@ flock -n 9 || { echo 'Deployment already running' >&2; exit 1; }
 umask 077
 env_backup=$(mktemp .env.rollback.XXXXXX)
 cp .env "$env_backup"
-cleanup() { rm -f "$env_backup" incoming/smtp.json; }
+cleanup() {
+  local status=$?
+  if [[ "$status" != 0 && -f "$env_backup" ]]; then cp "$env_backup" .env; fi
+  rm -f "$env_backup" incoming/smtp.json incoming/ai.json
+}
 trap cleanup EXIT
 compose=(docker compose --env-file .env -f compose.production.yaml)
 old_image=$(sed -n 's/^BACKEND_IMAGE=//p' .env)
@@ -20,6 +24,11 @@ if [[ -f incoming/smtp.json ]]; then
   install -m 0755 incoming/smtp-config.py smtp-config.py
   python3 smtp-config.py apply incoming/smtp.json .env
   rm -f incoming/smtp.json
+fi
+if [[ -f incoming/ai.json ]]; then
+  install -m 0755 incoming/ai-config.py ai-config.py
+  python3 ai-config.py apply incoming/ai.json .env
+  rm -f incoming/ai.json
 fi
 set_image() {
   local value="$1"

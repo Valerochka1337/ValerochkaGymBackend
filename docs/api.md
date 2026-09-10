@@ -75,3 +75,252 @@ nullable. equipmentRequirementState — KNOWN или UNKNOWN; KNOWN с пуст�
 Публичный `/v1/catalog`, ETag, архивы, `catalogRevision`, ошибки обновления клиента и
 каталога описаны в [контракте перехода](catalog-transition.md). Личные sync/records
 не включают перенесённые стандартные записи. Актуальная схема — `openapi.json`.
+
+## Локальные календарные планы — capability `calendar-plans`
+
+Возможность включается отдельно от существующего `X-Gym-Sync-Version: 2|3`.
+Клиент передаёт `X-Gym-Capabilities: calendar-plans` для `GET/POST /v1/sync`,
+`GET /v1/sync/changes` и обоих вариантов `GET /v1/records/*`. Заголовок допускает
+список через запятую; сервер возвращает в `X-Gym-Capabilities` только пересечение
+с поддержанными возможностями. Поддерживаются `calendar-plans`, `annotated-workout-writes`, `exercise-hint`, `profile`; ответ содержит только запрошенное пересечение.
+Неизвестные capability игнорируются. Клиент считает отсутствующий/пустой ответ
+отсутствием поддержки и сохраняет неподдерживаемые локальные данные и outbox.
+
+Без принятых дополнительных capabilities сервер показывает только прежние шесть kinds: snapshot,
+changes (фильтр **до** пагинации и построения курсора), список records и поиск по ID
+одинаково скрывают календарные записи, включая tombstone. Список скрытого kind пуст,
+поиск отдельной скрытой записи возвращает 404. Общая revision остаётся revision
+аккаунта. POST с любым новым kind без capability возвращает 426 `capability_required`
+до записи и до возврата сохранённого результата операции. Точный повтор с capability
+возвращает прежнюю revision; прежний `operationId` с другим содержимым даёт 409.
+Новый календарь не повышает минимальную версию аккаунта: прежние правила v2/v3,
+поля legacy `schedule` и Live Coach сохраняются.
+
+| kind | Поля payload |
+|---|---|
+| `calendar_plan` | `routineId: UUID`, `startsAtMillis: epoch-ms`, `timeZoneId: IANA ZoneId`, `legacyScheduleId: UUID?` |
+| `calendar_rule` | `routineId: UUID`, `isoDay: 1..7`, `localTime: HH:mm`, `timeZoneId: IANA ZoneId`, `startLocalDate: YYYY-MM-DD`, `legacyRuleKey: String?` |
+| `calendar_exception` | `ruleId: UUID`, `instanceKey: YYYY-MM-DDTHH:mm[ZoneId]`, `kind: CANCELLED|MOVED`, `movedAtMillis: epoch-ms|null` |
+
+UUID новых календарных записей и ссылочные UUID — канонические строки в нижнем регистре. Неизвестные поля запрещены;
+`legacyScheduleId` и `legacyRuleKey` можно опустить или передать null. Непустой ключ
+legacy-правила ограничен 1024 символами. Ненулевые legacy-идентификаторы уникальны
+среди живых записей соответствующего kind в аккаунте; ссылки на Google не передаются.
+`routineId` ссылается на живую личную программу, `ruleId` — на живое правило того же
+владельца. Все ссылки и уникальность проверяются в итоговом состоянии атомарного пакета.
+
+`startsAtMillis` — фиксированный instant. Правило хранит локальное недельное время,
+начиная с включительной `startLocalDate`; дата старта не обязана совпадать с `isoDay`.
+Допустимы реальные ZoneId из базы временных зон, включая `UTC`, но не произвольные
+смещения вроде `+03:00`. Новые даты ограничены `1970-01-01`…`2100-12-31` включительно:
+instant плана проверяется после перевода в его зону, moved instant — в зону правила.
+Дата старта и исходная дата ключа исключения имеют тот же диапазон. Legacy `schedule`
+не получает эти ограничения и сохраняет прежний payload.
+
+Ключ исключения содержит **исходные** дату, время и зону правила; дата соответствует
+дню недели и не раньше старта. `CANCELLED` требует явного `movedAtMillis: null`, `MOVED`
+— целого instant. UUID записи исключения вычисляется Java-совместимым
+`UUID.nameUUIDFromBytes` от UTF-8 строки
+`ValerochkaGym.calendar-exception:v1:<ruleId>:<instanceKey>`; таким образом одна пара
+правило/ключ имеет ровно одну идентичность. DST gap/overlap не меняет исходный ключ.
+Разворачивание повторений выполняет клиент: gap — первый допустимый instant после
+пропуска, overlap — более раннее смещение. Сервер не создаёт внешние события.
+
+Изменение дня недели, времени, зоны или старта правила требует нового UUID и атомарного
+удаления старого правила с его исключениями. Изменение только `routineId` сохраняет
+исключения. Удалённое правило нельзя восстановить с прежним UUID; для повторного создания
+нужен новый UUID, даже если расписание совпадает. Удаление родителя без удаления живых ссылок отклоняется; все связанные
+удаления можно отправить одним пакетом в любом порядке. Программа с живыми планами
+или правилами также не удаляется. Завершённые тренировки календарь не изменяет.
+
+Канонический межплатформенный [fixture](../src/test/resources/cal01-sync-contract.json)
+проверяется HTTP-набором вместе с изоляцией владельцев, legacy-проекцией и ledger.
+
+## AI drafts v1 — авторизованный серверный AI
+
+`GET /v1/ai/status` возвращает `{schemaVersion:1,availability,actions}`. При неполной либо
+выключенной конфигурации availability=`UNCONFIGURED`, actions=[]; иначе `AVAILABLE` и
+`EXERCISE_DRAFT`, `INBODY_PHOTO_DRAFT`, `CALENDAR_DRAFT`. Это наличие конфигурации, не проверка live provider.
+AI не меняет readiness приложения и не повышает sync protocol/capabilities.
+
+- `POST /v1/ai/exercise-drafts`: `{requestId,expectedRevision,expectedCatalogRevision,description}`.
+- `POST /v1/ai/inbody-drafts`: `{requestId,expectedRevision,expectedCatalogRevision,image:{mediaType:"image/jpeg",base64}}`.
+- `POST /v1/ai/calendar-drafts`: строгое UTF-8 JSON-тело из
+  [контракта calendar AI](../src/test/resources/calendar-ai-contract.json). Оно связывается с
+  SHA-256 исходных байтов и `requestId`; успешный повтор возвращает первоначальный PENDING
+  proposal без нового provider-вызова. Сервер не передаёт provider веса, историю или health/InBody.
+- Ответ: `{requestId,context:{revision,catalogRevision},result}`. Exercise result —
+  `{kind:"EXISTING",exerciseId:UUID}` либо `{kind:"NEW",name,type,muscles:[{muscle,contribution}]}`.
+  InBody result — `{kind:"INBODY",draft}` с точными nullable полями и пятью сегментами из
+  [контракта v1](../src/test/resources/ai-contract-v1.json).
+
+UUID канонические lowercase; revisions неотрицательные. Описание 1…2000, имя 1…200;
+типы/мышцы известные, мышцы не повторяются, contribution 0/50/100 и хотя бы один ненулевой.
+Числа конечные и неотрицательные; null означает нераспознанное, не ноль. Полностью пустой
+InBody draft, неизвестные поля/единицы или неразрешимый exercise UUID отклоняются.
+JPEG ≤6MiB decoded / ≤8MiB base64, размеры 1…3072, общий поток запроса ≤10MiB.
+Фото проверяется без disk cache/temp files; пользователь подтверждает передачу в Android.
+
+Перед действием клиент завершает sync и передаёт ACK revision и проверенную catalogRevision.
+Сервер под короткими catalog→owner locks сверяет revision, собирает только разрешённый контекст,
+отпускает транзакцию, вызывает provider, проверяет результат и повторно проверяет обе ревизии
+и текущую сессию. Exercise context содержит live owner/public catalog; InBody — только выбранное
+фото и extraction schema. История здоровья, заметки и другие владельцы не включаются.
+Изменения/архивация/отзыв сессии во время запроса приводят к отказу, а не устаревшему draft.
+Ни один AI endpoint не сохраняет records, head, operations, prompt, фото или ответ. requestId —
+корреляция попытки, не exactly-once/idempotency promise; автоматических retry нет.
+
+Без конфигурации: 503 `ai_unavailable`; устаревшие revisions: 409 `ai_context_stale`;
+контекст >1MiB: 409 `ai_context_too_large`; malformed provider output: 502 `ai_invalid_response`;
+45s timeout: 504 `ai_timeout`; заняты два provider slots: 503 `ai_busy`; upstream failure:
+503 `ai_unavailable`; некорректное фото: 400 `invalid_image`; byte limit: 413 `payload_too_large`.
+Ошибки не содержат upstream body, ключ, модель, URL, prompt или значения здоровья.
+
+Серверный адаптер использует фиксированный HTTPS `/v1/chat/completions`, без redirects,
+stream/store/tools/model fallback и `/models`. Запросы используют strict JSON schema,
+`n=1`, `max_completion_tokens=2048`; допускается ровно один completed assistant choice без
+refusal/tool calls. Connect timeout 5s; response ≤256KiB, весь вызов ≤45s и максимум два
+параллельных provider exchange. Отмена пытается остановить HTTP и не обещает отмену обработки
+или стоимости у провайдера. Совместимость images/strict schema зависит от операторской модели.
+[Create Chat Completion](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create),
+[Structured Outputs](https://developers.openai.com/api/docs/guides/structured-outputs).
+
+## Заметки подходов и личные подсказки
+
+`annotated-workout-writes` открывает необязательный `workout.exercises[].sets[].note`:
+строка, уже обрезанная по краям, максимум 2000 Unicode code points. Отсутствие означает
+пустую строку; null и нестроковые значения запрещены. Прежний `workout.note` сохраняет
+лимит 10000 и прежнюю форму. Протокол синхронизации не повышается.
+
+Без capability все GET sync, changes, records list и single удаляют только поле set.note.
+Фильтрация и проекция выполняются до построения курсора. POST без capability с новой
+непустой заметкой или поверх сохранённой непустой заметки (включая tombstone) возвращает
+409 `annotated_workout_requires_capability`; весь пакет откатывается без новой ревизии
+и записи операции. Совместимые ресурсы продолжают синхронизироваться.
+
+`exercise-hint` открывает личный kind `exercise_hint`. Его id — канонический lowercase UUID
+упражнения; payload строго `{text,updatedAt}`: непустой trimmed text до 2000 Unicode code
+points и неотрицательные целые UTC epoch milliseconds. Идентичность подсказки ограничена
+авторизованным владельцем, даже для STANDARD упражнения; каталог не меняется. Новая или
+изменённая живая подсказка требует собственного либо публичного живого неархивного упражнения.
+Уже существующая подсказка сохраняется при последующем удалении упражнения, tombstone разрешён.
+Без capability kind скрыт до пагинации; list пуст, single 404. POST с этим kind без capability
+возвращает 426 `capability_required` до ledger, включая точный повтор.
+
+Клиент хранит принятые capabilities по владельцу. При отсутствии/понижении ответа он
+сбрасывает кэш проекции, сохраняет неподдержанные записи и pending bytes; при первом
+принятии выполняет полный refresh, не продолжает старый курсор. Разрешён точный повтор
+уже отправленной операции; подтверждение соответствует целому отправленному пакету.
+
+
+## Базовый профиль — capability `profile`
+
+Один личный `profile` на аутентифицированного владельца. ID и payload `syncId` равны
+`UUID.nameUUIDFromBytes(UTF8("ValerochkaGym.profile.v1:" + authenticatedOwnerUuid))`;
+оба UUID имеют каноническое lowercase написание. Owner задаётся сессией, поле ownerId
+в payload не принимается. Нельзя создать второй profile с альтернативным UUID.
+
+Все 11 полей обязательны: `schemaVersion: 1`, `syncId`, `updatedAt` (неотрицательный int64,
+UTC epoch millis), `trainingGoal`, `sex`, `birthDate`, `experienceLevel`,
+`plannedSessionsPerWeek`, `preferredSessionDurationMinutes`, `manualConstraints`, `equipmentIds`.
+Nullable значения передаются явным JSON null. Goal: STRENGTH/MUSCLE_GAIN/FAT_LOSS/
+GENERAL_FITNESS/ENDURANCE/OTHER; sex: FEMALE/MALE/PREFER_NOT_TO_SAY; experience:
+BEGINNER/INTERMEDIATE/ADVANCED. Дата — реальная ISO YYYY-MM-DD, 1900-01-01…сегодня UTC.
+Частота 1…7, длительность 10…240 минут. Ограничения — trimmed непустая строка до 2000
+Unicode code points или null. Equipment — уникальные, сортированные canonical catalog IDs;
+пустой список означает отсутствие предпочтения.
+
+`deleted=true` всегда возвращает 400 до ledger/revision, включая клиента без capability.
+Очистка — обычное обновление с пустым snapshot. POST profile без capability возвращает
+426 capability_required; чужой/альтернативный ID — 400; stale baseRevision — 409
+revision_conflict. Клиент принимает актуальный серверный singleton при конфликте, не
+создаёт второй профиль. Смешанный пакет атомарен. Все чтения (`/sync`, `/sync/changes`,
+`/records/profile`, `/records/profile/{id}`) скрывают профиль без capability до пагинации;
+отсутствие record в таком ответе не является удалением. При потере согласованной capability
+клиент сохраняет локальный профиль, baseline и outbox до повторного согласования/full refresh.
+Legacy v2/v3, measurements, CAL-01 и заметки сохраняют прежний формат.
+
+Exercise AI читает только сохранённый профиль текущего владельца вместе с каталогом под
+catalog→head locks и проверкой expectedRevision. Provider получает typed nullable профиль
+с возрастом в полных годах, вычисленным сервером на текущую UTC дату, без birthDate,
+syncId, ownerId и измерений. Unknown не заполняется догадками. InBody не получает профиль.
+После provider call выполняется прежняя повторная проверка ревизии и сессии.
+Контракт: `src/test/resources/basic-profile-sync-contract.json`, SHA-256
+`1bec288ad8d841efaf645af13ac5ea1cbe2b53c841846589c8101cfe3f524ed6`.
+
+## Ручные медицинские записи: health-ledger-v1
+
+Выделенные `/v1/health-ledger/*` и `/v1/health-ai-disclosure` требуют Bearer и
+`X-Gym-Capabilities: health-ledger-v1` до чтения тела. Без capability —
+`426 capability_required`. Записи `health_report`, `health_observation`,
+`health_restriction` не входят в generic sync/records и не копируют `measurement`.
+Точные формы, пределы строк, decimal/date правила и векторы фиксированы в
+`src/test/resources/manual-health-contract.json`.
+
+- `POST /v1/health-ledger/operations`: `{operationId,versions,heads}`; максимум 5MiB
+  UTF-8,500 версий и500 head intents. Неизменяемые версии получают `serverSequence`
+  и отдельный `healthRevision`; APPLIED head CAS также получает `healthRevision`.
+  STALE сохраняет принятую версию и возвращает текущую голову. Exact operation
+  replay возвращает сохранённые байты результата; иные байты того же operationId
+  дают 409 `health_operation_reused`. Неравная immutable version — 409
+  `health_version_collision`. Некорректные ссылки — 400 `health_reference_invalid`.
+- `GET /v1/health-ledger/snapshot?limit=1..500&pageToken=...` и
+  `GET /v1/health-ledger/changes?after=...&limit=1..500&pageToken=...`: общий поток
+  immutable version/head events ограничен watermarkH; snapshot использует heads
+  из истории наH. Только финальная страница выдаёт `commitCursor`. Page tokens
+  живут 24часа; committed cursors не имеют TTL пока история сохранена. Неверный
+  владелец, purpose, подпись, утраченное состояние/ключ — 410 `health_cursor_expired`.
+- `GET /v1/health-ai-disclosure`: отдельная квитанция; отсутствующая —
+  `{revision:0,noticeVersion:0,enabled:false,recordedAtEpochMs:0}`.
+- `POST /v1/health-ai-disclosure`: `{operationId,baseRevision,noticeVersion,enabled}`,
+  максимум 4096байт, raw-byte replay. Stale base — 409 `consent_revision_conflict`;
+  changed-byte reuse — 409 `consent_operation_reused`.
+
+InBody требует `X-Health-AI-Disclosure-Revision` текущей включённой квитанции
+noticeVersion 1 до чтения изображения. Проверки повторяются перед/после provider
+и на ASYNC dispatch; отзыв даёт 403 `health_ai_consent_required` с отбрасыванием
+результата. DB locks не удерживаются через provider HTTP. Exercise AI не зависит
+от этого согласия.
+
+Health storage limits: `gym.health.max-bytes=209715200` и
+`gym.health.max-versions=100000` по умолчанию. Считаются логические UTF-8 bytes
+версий, событий/истории и raw/result operations, без SQL/index overhead.
+Проверка всей операции атомарна до выделения событий; exact replay бесплатен.
+Превышение — 409 `health_account_limit`. Это storage quota, не AI usage limit.
+
+### Coach relations (stage 23)
+
+`/v1/coach-relations` is a dedicated consent API. It never uses `/sync`, `/records`, coach journal,
+health, or AI disclosure as a cross-account read surface. The frozen JSON contract is
+`vibe/contracts/coach-relations-contract.json` (byte-identical test resource).
+
+- `POST /invitations` takes `{operationId}` and returns a one-time visible seven-day token.
+  Exact create replay returns `409 invite_token_not_replayable`; no stored plaintext token exists.
+- `POST /invitations/accept` takes `{operationId,token,calendar,completedWorkouts}`. Both consent
+  booleans are mandatory. Same recipient and grants can replay; another recipient cannot consume it.
+- `GET /clients`, `GET /coaches`: bounded directory, actor/mode/revision-bound cursor.
+- `POST /{relationId}/revoke`: bilateral terminal revoke. It never changes accepted recipient records.
+- `GET /{relationId}/calendar`, `GET /{relationId}/completed-workouts`: separate grants, at most 50
+  items and 1 MiB. Only allowlisted fields are projected. Completed sets expose actual metrics;
+  explicit actual null remains null, absent actual field falls back to its legacy completed metric.
+  Unfinished sets, notes, target/original metrics and health are excluded. Valid empty/large historical
+  arrays retain their existing limits. A single item over the response byte budget returns 413.
+- `POST /{relationId}/training-proposals`, `PUT /{relationId}/training-proposals/{proposalId}`,
+  `POST /{relationId}/training-proposals/{proposalId}/revoke`: server derives COACH author and immutable
+  origin relation. Old relations and legacy proposals without origin never authorize pending approval.
+  The legacy PLAN-01 revoke endpoint remains denied because it has no operation ID.
+  PLAN-01 accepts recipient-edited previews after live validation. The author version remains immutable; approval retains the exact accepted request bytes for replay and audit.
+
+All relation mutators validate strict UTF-8 JSON with a 512 KiB budget and bind operation UUID globally
+per actor to action, route, resource tuple and raw SHA-256. Create/accept ledgers omit raw secret bodies;
+other ledgers retain exact request bytes. Projection cursors expire after 15 minutes, and revision
+changes return `409 relation_snapshot_changed`.
+
+Coach-relations cryptography derives separate invite-token and cursor keys from `gym.token-pepper`.
+`gym.coach-relations.key-version` defaults to 1. During pepper rotation set a new version and retain
+prior keys through `gym.coach-relations.retained-key-versions` (comma-separated version integers),
+`gym.coach-relations.keys.<version>.pepper` and
+`gym.coach-relations.keys.<version>.retire-at-millis`. The retirement timestamp must be at least eight
+days after the last issuance under that version. Only current-version keys issue new tokens; retained
+keys only verify. After retirement invitations resolve as absent and cursors return `cursor_key_retired`.
+Keep pepper material in deployment secret configuration, never in source control.

@@ -218,11 +218,28 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "X-Gym-Capabilities",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
           "200": {
             "description": "OK",
+            "headers": {
+              "X-Gym-Capabilities": {
+                "description": "Accepted intersection: calendar-plans, annotated-workout-writes, exercise-hint, profile; otherwise empty",
+                "style": "simple",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
             "content": {
               "*/*": {
                 "schema": {
@@ -246,6 +263,14 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "X-Gym-Capabilities",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -261,6 +286,15 @@
         "responses": {
           "200": {
             "description": "OK",
+            "headers": {
+              "X-Gym-Capabilities": {
+                "description": "Accepted intersection: calendar-plans, annotated-workout-writes, exercise-hint, profile; otherwise empty",
+                "style": "simple",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
             "content": {
               "*/*": {
                 "schema": {
@@ -347,6 +381,106 @@
         "responses": {
           "200": {
             "description": "OK"
+          }
+        }
+      }
+    },
+    "/v1/coach/journal": {
+      "get": {
+        "tags": [
+          "coach-controller"
+        ],
+        "operationId": "page",
+        "parameters": [
+          {
+            "name": "after",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "default": 0
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "default": 100
+            }
+          },
+          {
+            "name": "X-Gym-Sync-Version",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/CoachPage"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "coach-controller"
+        ],
+        "operationId": "push_1",
+        "parameters": [
+          {
+            "name": "X-Gym-Sync-Version",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CoachPush"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "integer",
+                    "format": "int32"
+                  }
+                }
+              }
+            }
           }
         }
       }
@@ -629,6 +763,66 @@
         }
       }
     },
+    "/v1/ai/inbody-drafts": {
+      "post": {
+        "tags": [
+          "ai-controller"
+        ],
+        "operationId": "inbody",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InBodyDraftRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/AiDraftResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/ai/exercise-drafts": {
+      "post": {
+        "tags": [
+          "ai-controller"
+        ],
+        "operationId": "exercise",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExerciseDraftRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/AiDraftResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/admin/api/users/{id}/revoke-sessions": {
       "post": {
         "tags": [
@@ -773,6 +967,14 @@
             }
           },
           {
+            "name": "X-Gym-Capabilities",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "after",
             "in": "query",
             "required": false,
@@ -804,6 +1006,15 @@
         "responses": {
           "200": {
             "description": "OK",
+            "headers": {
+              "X-Gym-Capabilities": {
+                "description": "Accepted intersection: calendar-plans, annotated-workout-writes, exercise-hint, profile; otherwise empty",
+                "style": "simple",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
             "content": {
               "*/*": {
                 "schema": {
@@ -854,6 +1065,14 @@
             }
           },
           {
+            "name": "X-Gym-Capabilities",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "kind",
             "in": "path",
             "required": true,
@@ -885,6 +1104,15 @@
         "responses": {
           "200": {
             "description": "OK",
+            "headers": {
+              "X-Gym-Capabilities": {
+                "description": "Accepted intersection: calendar-plans, annotated-workout-writes, exercise-hint, profile; otherwise empty",
+                "style": "simple",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
             "content": {
               "*/*": {
                 "schema": {
@@ -915,6 +1143,14 @@
             }
           },
           {
+            "name": "X-Gym-Capabilities",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "kind",
             "in": "path",
             "required": true,
@@ -935,6 +1171,15 @@
         "responses": {
           "200": {
             "description": "OK",
+            "headers": {
+              "X-Gym-Capabilities": {
+                "description": "Accepted intersection: calendar-plans, annotated-workout-writes, exercise-hint, profile; otherwise empty",
+                "style": "simple",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
             "content": {
               "*/*": {
                 "schema": {
@@ -1003,6 +1248,26 @@
               "*/*": {
                 "schema": {
                   "$ref": "#/components/schemas/CatalogSnapshot"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/ai/status": {
+      "get": {
+        "tags": [
+          "ai-controller"
+        ],
+        "operationId": "status",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/AiStatus"
                 }
               }
             }
@@ -1470,16 +1735,19 @@
       "JsonNode": {
         "type": "object",
         "properties": {
-          "pojo": {
+          "integralNumber": {
             "type": "boolean"
           },
-          "int": {
-            "type": "boolean"
-          },
-          "long": {
+          "floatingPointNumber": {
             "type": "boolean"
           },
           "container": {
+            "type": "boolean"
+          },
+          "object": {
+            "type": "boolean"
+          },
+          "number": {
             "type": "boolean"
           },
           "nodeType": {
@@ -1505,10 +1773,7 @@
           "valueNode": {
             "type": "boolean"
           },
-          "object": {
-            "type": "boolean"
-          },
-          "number": {
+          "short": {
             "type": "boolean"
           },
           "double": {
@@ -1530,10 +1795,13 @@
           "binary": {
             "type": "boolean"
           },
-          "integralNumber": {
+          "pojo": {
             "type": "boolean"
           },
-          "floatingPointNumber": {
+          "int": {
+            "type": "boolean"
+          },
+          "long": {
             "type": "boolean"
           },
           "array": {
@@ -1546,9 +1814,6 @@
             "type": "boolean"
           },
           "float": {
-            "type": "boolean"
-          },
-          "short": {
             "type": "boolean"
           },
           "embeddedValue": {
@@ -1671,6 +1936,41 @@
           }
         }
       },
+      "CoachEntry": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "workoutId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "deviceId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "createdAt": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "payload": {
+            "$ref": "#/components/schemas/JsonNode"
+          }
+        }
+      },
+      "CoachPush": {
+        "type": "object",
+        "properties": {
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CoachEntry"
+            }
+          }
+        }
+      },
       "CodeRequest": {
         "type": "object",
         "properties": {
@@ -1722,6 +2022,82 @@
             "type": "string"
           },
           "password": {
+            "type": "string"
+          }
+        }
+      },
+      "AiImage": {
+        "type": "object",
+        "properties": {
+          "mediaType": {
+            "type": "string"
+          },
+          "base64": {
+            "type": "string"
+          }
+        }
+      },
+      "InBodyDraftRequest": {
+        "type": "object",
+        "properties": {
+          "requestId": {
+            "type": "string"
+          },
+          "expectedRevision": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "expectedCatalogRevision": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "image": {
+            "$ref": "#/components/schemas/AiImage"
+          }
+        }
+      },
+      "AiContextRevision": {
+        "type": "object",
+        "properties": {
+          "revision": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "catalogRevision": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "AiDraftResponse": {
+        "type": "object",
+        "properties": {
+          "requestId": {
+            "type": "string"
+          },
+          "context": {
+            "$ref": "#/components/schemas/AiContextRevision"
+          },
+          "result": {
+            "$ref": "#/components/schemas/JsonNode"
+          }
+        }
+      },
+      "ExerciseDraftRequest": {
+        "type": "object",
+        "properties": {
+          "requestId": {
+            "type": "string"
+          },
+          "expectedRevision": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "expectedCatalogRevision": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "description": {
             "type": "string"
           }
         }
@@ -1852,6 +2228,27 @@
           }
         }
       },
+      "CoachPage": {
+        "type": "object",
+        "properties": {
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CoachEntry"
+            }
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "watermark": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
       "CatalogRecord": {
         "type": "object",
         "properties": {
@@ -1893,6 +2290,24 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/CatalogRecord"
+            }
+          }
+        }
+      },
+      "AiStatus": {
+        "type": "object",
+        "properties": {
+          "schemaVersion": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "availability": {
+            "type": "string"
+          },
+          "actions": {
+            "type": "array",
+            "items": {
+              "type": "string"
             }
           }
         }

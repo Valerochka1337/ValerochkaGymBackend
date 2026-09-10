@@ -17,3 +17,24 @@ databaseChangeLog:
   - include:
       file: 006-live-coach.sql
       relativeToChangelogFile: true
+  - include:
+      file: 007-calendar-plans.sql
+      relativeToChangelogFile: true
+  - include:
+      file: 008-workout-notes.sql
+      relativeToChangelogFile: true
+  - include:
+      file: 009-basic-profile.sql
+      relativeToChangelogFile: true
+  - include:
+      file: 010-training-proposals.sql
+      relativeToChangelogFile: true
+  - include:
+      file: 011-manual-health.sql
+      relativeToChangelogFile: true
+  - include:
+      file: 012-coach-relations.sql
+      relativeToChangelogFile: true
+  - include:
+      file: 013-calendar-ai-attempts.sql
+      relativeToChangelogFile: true
