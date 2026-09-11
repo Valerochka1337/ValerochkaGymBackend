@@ -29,7 +29,11 @@ class BearerFilter(
     chain: FilterChain,
   ) {
     try {
-      if (request.contentLengthLong > 10 * 1024 * 1024)
+      val maxRequestBytes =
+        if (request.requestURI == "/v1/ai/coach-turn")
+          tech.valerochkagym.service.ai.CoachTurnService.MAX_REQUEST_BYTES
+        else 10 * 1024 * 1024
+      if (request.contentLengthLong > maxRequestBytes)
         throw ApiException(413, "payload_too_large", "Превышен размер запроса")
       if (request.requestURI.startsWith("/v1/auth/")) limits.check("ip:${request.remoteAddr}", 120)
       val header = request.getHeader("Authorization")
@@ -78,7 +82,7 @@ class BearerFilter(
 
               override fun read(): Int {
                 val value = delegate.read()
-                if (value >= 0 && ++count > 10 * 1024 * 1024)
+                if (value >= 0 && ++count > maxRequestBytes)
                   throw ApiException(413, "payload_too_large", "Превышен размер запроса")
                 return value
               }
@@ -86,7 +90,7 @@ class BearerFilter(
               override fun read(bytes: ByteArray, offset: Int, length: Int): Int {
                 val read = delegate.read(bytes, offset, length)
                 if (read > 0) count += read
-                if (count > 10 * 1024 * 1024)
+                if (count > maxRequestBytes)
                   throw ApiException(413, "payload_too_large", "Превышен размер запроса")
                 return read
               }
