@@ -2,7 +2,7 @@ const EQUIPMENT_LABELS = {"barbell": "Штанга", "dumbbells": "Гантел�
 'use strict';
 
 const $ = id => document.getElementById(id);
-const names = {overview:'Обзор',users:'Пользователи',exercise:'Упражнения',gym:'Залы',routine:'Программы',workout:'Тренировки',measurement:'Замеры',schedule:'Расписание',audit:'Журнал изменений'};
+const names = {ai:'ИИ · Провайдер и модели',overview:'Обзор',users:'Пользователи',exercise:'Упражнения',gym:'Залы',routine:'Программы',workout:'Тренировки',measurement:'Замеры',schedule:'Расписание',audit:'Журнал изменений'};
 Object.assign(names, {'standard:exercise':'Стандартный каталог · Упражнения','standard:gym':'Стандартные залы','standard:routine':'Стандартные шаблоны','standard:equipment':'Оборудование'});
 const isStandard = () => view.startsWith('standard:');
 const singular = {exercise:'Упражнение',gym:'Зал',routine:'Программа',workout:'Тренировка',measurement:'Замер',schedule:'Событие',equipment:'Оборудование'};
@@ -49,7 +49,7 @@ async function api(path, method = 'GET', body) {
 function clearSession() {
   csrf=''; owner=null; requestVersion++; dialogVersion++; dialogBusy=false; dialogDirty=false;
   $('dialog').close(); $('dialog-content').replaceChildren();
-  $('overview').replaceChildren(); $('table-wrap').replaceChildren(); $('shell').hidden=true;
+  $('ai-settings').replaceChildren(); $('overview').replaceChildren(); $('table-wrap').replaceChildren(); $('shell').hidden=true;
 }
 async function showLogin(message='') {
   $('login').hidden=false; $('login-error').textContent=message;
@@ -93,10 +93,10 @@ async function navigate(next) { view=next;offset=0;$('search').value='';$('delet
 async function load() {
   const version=++requestVersion;
   $('page-title').textContent=names[view];
-  $('page-description').textContent=isStandard() ? 'Общие объекты доступны всем, включая офлайн. Архив сохраняет содержимое и ссылки.' : view==='overview' ? 'Пользователи, данные и последние действия — всё в одном месте.' : view==='audit' ? 'Кто, что и зачем изменил. История сохраняется вместе с версиями записей.' : view==='users' ? 'Аккаунты, способы входа и данные пользователей.' : 'Данные пользователей приложения. Правки появятся на устройствах при синхронизации.';
+  $('page-description').textContent=view==='ai' ? 'Подключение OpenAI-совместимого провайдера. Изменения применяются сразу после сохранения.' : isStandard() ? 'Общие объекты доступны всем, включая офлайн. Архив сохраняет содержимое и ссылки.' : view==='overview' ? 'Пользователи, данные и последние действия — всё в одном месте.' : view==='audit' ? 'Кто, что и зачем изменил. История сохраняется вместе с версиями записей.' : view==='users' ? 'Аккаунты, способы входа и данные пользователей.' : 'Данные пользователей приложения. Правки появятся на устройствах при синхронизации.';
   for(const nav of $('navigation').querySelectorAll('button')) { if(nav.dataset.view===view) nav.setAttribute('aria-current','page'); else nav.removeAttribute('aria-current'); }
-  $('overview').hidden=view!=='overview'; $('listing').hidden=view==='overview';
-  $('owner-banner').hidden=isStandard() || !owner || ['users','overview'].includes(view);
+  $('overview').hidden=view!=='overview'; $('listing').hidden=['overview','ai'].includes(view); $('ai-settings').hidden=view!=='ai'; if(view!=='ai') $('ai-settings').replaceChildren();
+  $('owner-banner').hidden=isStandard() || !owner || ['users','overview','ai'].includes(view);
   $('owner-name').textContent=owner ? 'Данные: ' + owner.email : '';
   $('create').hidden=!isStandard() && !['gym','exercise'].includes(view);
   $('deleted-label').hidden=['overview','users','audit'].includes(view);
@@ -104,6 +104,7 @@ async function load() {
   $('search').placeholder=view==='users' ? 'Поиск по email или ID пользователя' : 'Поиск по названию, email или ID';
   $('refresh').disabled=true; $('table-wrap').setAttribute('aria-busy','true');
   try {
+    if(view==='ai') { $('ai-settings').replaceChildren(); const data=await api('/ai-settings'); if(version===requestVersion) renderAiSettings(data); return; }
     if(isStandard()) { await loadStandard(version); return; }
     if(view==='overview') { const data=await api('/summary'); if(version===requestVersion) renderOverview(data); return; }
     $('table-wrap').replaceChildren(el('p',{class:'empty'},'Загружаем данные…'));
@@ -385,4 +386,40 @@ async function editStandard(record) {
     catch(e){error.textContent=e.message;}finally{dialogBusy=false;fields.disabled=false;save.disabled=false;}
   };
   $('dialog-content').append(form);name.input.focus();
+}
+
+function renderAiSettings(data) {
+  const form=el('form',{class:'login-card',id:'ai-settings-form'});
+  const enabled=el('input',{type:'checkbox',checked:data.enabled,id:'ai-enabled'});
+  const fields={};
+  form.append(el('label',{class:'check'},enabled,'Включить ИИ'));
+  for(const [name,label,value] of [
+    ['baseUrl','URL провайдера',data.baseUrl],['textModel','Модель текста',data.textModel],
+    ['visionModel','Модель изображений',data.visionModel],['coachModel','Модель тренера (пусто — модель текста)',data.coachModel],
+    ['coachModels','Дополнительные модели тренера через запятую',data.coachModels.join(', ')],
+  ]) {
+    fields[name]=el('input',{id:'ai-'+name,type:name==='baseUrl'?'url':'text',value,maxlength:name==='baseUrl'?2048:name==='coachModels'?4019:200,autocomplete:'off',spellcheck:'false'});
+    form.append(el('label',{},label,fields[name]));
+  }
+  const key=el('input',{id:'ai-apiKey',type:'password',maxlength:16384,autocomplete:'new-password',spellcheck:'false',disabled:!data.encryptionAvailable});
+  const clear=el('input',{type:'checkbox',id:'ai-clearApiKey'});
+  form.append(el('label',{},'Новый API-ключ',key),el('p',{class:'muted'},data.hasApiKey?'Ключ сохранён. Оставьте поле пустым, чтобы сохранить его.':'API-ключ ещё не задан.'),el('label',{class:'check'},clear,'Удалить сохранённый API-ключ'));
+  if(!data.encryptionAvailable) form.append(el('p',{class:'error'},'На сервере не настроен ключ шифрования. Обратитесь к администратору сервера.'));
+  const submit=el('button',{type:'submit',class:'primary'},'Сохранить настройки');
+  const error=el('p',{class:'error',role:'alert'});
+  form.append(submit,error);
+  form.addEventListener('submit',async event=>{
+    event.preventDefault(); submit.disabled=true; error.textContent='';
+    const version=requestVersion;
+    try {
+      const body={revision:data.revision,enabled:enabled.checked,clearApiKey:clear.checked};
+      for(const [name,input] of Object.entries(fields)) body[name]=name==='coachModels'?input.value.split(',').map(x=>x.trim()).filter(Boolean):input.value.trim();
+      if(key.value) body.apiKey=key.value;
+      const result=await api('/ai-settings','PUT',body);
+      key.value='';
+      if(version===requestVersion) {renderAiSettings(result);notice('Настройки ИИ сохранены');}
+    } catch(e) {if(version===requestVersion) error.textContent=e.message;}
+    finally {submit.disabled=false;}
+  });
+  $('ai-settings').replaceChildren(form);
 }

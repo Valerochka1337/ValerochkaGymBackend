@@ -3,7 +3,6 @@ package tech.valerochkagym.config
 import java.net.URI
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
-import org.springframework.core.env.Environment
 import tech.valerochkagym.service.ai.*
 import tools.jackson.databind.ObjectMapper
 
@@ -48,12 +47,23 @@ class AiProviderSettings(
 
 @Configuration
 class AiConfiguration {
+  private val client =
+    java.net.http.HttpClient.newBuilder()
+      .connectTimeout(java.time.Duration.ofSeconds(5))
+      .followRedirects(java.net.http.HttpClient.Redirect.NEVER)
+      .build()
+
   @Bean
-  fun aiProvider(env: Environment, json: ObjectMapper): AiProvider {
-    val settings = AiProviderSettings.from(env::getProperty)
-    return if (settings == null) UnconfiguredAiProvider()
-    else HttpOpenAiChatCompletionsProvider(settings, json)
-  }
+  fun aiProvider(settings: AiSettingsService, json: ObjectMapper): AiProvider =
+    object : AiProvider {
+      override val available
+        get() = settings.current() != null
+
+      override fun generate(input: AiProviderInput) =
+        settings.current()?.let {
+          HttpOpenAiChatCompletionsProvider(it.provider, json, client).generate(input)
+        } ?: throw aiError("ai_unavailable")
+    }
 }
 
 // Not a data class: provider credentials must not be exposed by a generated toString.
@@ -86,8 +96,21 @@ class CoachProviderSettings(
 
 @Configuration
 class CoachAiConfiguration {
+  private val client =
+    java.net.http.HttpClient.newBuilder()
+      .connectTimeout(java.time.Duration.ofSeconds(5))
+      .followRedirects(java.net.http.HttpClient.Redirect.NEVER)
+      .build()
+
   @Bean
-  fun coachTurnProvider(env: Environment, json: ObjectMapper): CoachTurnProvider =
-    CoachProviderSettings.from(env::getProperty)?.let { HttpCoachTurnProvider(it, json) }
-      ?: UnconfiguredCoachTurnProvider()
+  fun coachTurnProvider(settings: AiSettingsService, json: ObjectMapper): CoachTurnProvider =
+    object : CoachTurnProvider {
+      override fun catalog() =
+        settings.current()?.let { CoachModelCatalog("AVAILABLE", it.defaultModel, it.models) }
+          ?: UnconfiguredCoachTurnProvider().catalog()
+
+      override fun complete(input: CoachTurnInput) =
+        settings.current()?.let { HttpCoachTurnProvider(it, json, client).complete(input) }
+          ?: throw aiError("ai_unavailable")
+    }
 }

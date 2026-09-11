@@ -25,11 +25,6 @@ if [[ -f incoming/smtp.json ]]; then
   python3 smtp-config.py apply incoming/smtp.json .env
   rm -f incoming/smtp.json
 fi
-if [[ -f incoming/ai.json ]]; then
-  install -m 0755 incoming/ai-config.py ai-config.py
-  python3 ai-config.py apply incoming/ai.json .env
-  rm -f incoming/ai.json
-fi
 set_image() {
   local value="$1"
   sed '/^BACKEND_IMAGE=/d' .env > .env.next

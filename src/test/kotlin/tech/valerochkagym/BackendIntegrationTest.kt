@@ -36,6 +36,113 @@ import tools.jackson.databind.ObjectMapper
   classes = [Application::class, BackendIntegrationTest.Fakes::class],
 )
 class BackendIntegrationTest {
+  @Autowired lateinit var aiSettings: tech.valerochkagym.service.ai.AiSettingsService
+
+  @Test
+  fun `AI admin settings encrypt credentials enforce access and update live catalog`() {
+    val browser = administrator()
+    val path = "/api/ai-settings"
+    assertEquals(401, adminCall("GET", path).status)
+    val initial = adminCall("GET", path, browser = browser)
+    assertEquals(200, initial.status)
+    assertFalse(initial.body!!["hasApiKey"].asBoolean())
+    val body =
+      mapOf(
+        "revision" to 0,
+        "enabled" to true,
+        "baseUrl" to "https://provider.example/v1",
+        "apiKey" to "test-secret-api-key",
+        "textModel" to "text",
+        "visionModel" to "vision",
+        "coachModel" to "coach",
+        "coachModels" to listOf("coach", "other"),
+      )
+    assertEquals(403, adminCall("PUT", path, body, browser, csrf = null).status)
+    assertEquals(403, adminCall("PUT", path, body, browser, origin = "https://evil.test").status)
+    assertEquals(
+      400,
+      adminCall("PUT", path, body + ("baseUrl" to "http://provider.example"), browser).status,
+    )
+    val saved = adminCall("PUT", path, body, browser)
+    assertEquals(200, saved.status, saved.toString())
+    assertFalse(saved.response.body().contains("test-secret-api-key"))
+    assertFalse(saved.response.body().contains("encrypted_api_key"))
+    assertTrue(saved.body!!["hasApiKey"].asBoolean())
+    val encrypted =
+      db.queryForObject("SELECT encrypted_api_key FROM ai_settings", String::class.java)!!
+    assertTrue(encrypted.startsWith("v1:"))
+    assertFalse(encrypted.contains("test-secret-api-key"))
+    assertEquals("test-secret-api-key", aiSettings.current()!!.provider.key)
+    assertEquals(listOf("coach", "other"), aiSettings.current()!!.models)
+    assertEquals(409, adminCall("PUT", path, body, browser).status)
+    val next = body - "apiKey" + mapOf("revision" to 1, "textModel" to "new-text")
+    assertEquals(200, adminCall("PUT", path, next, browser).status)
+    assertEquals(
+      encrypted,
+      db.queryForObject("SELECT encrypted_api_key FROM ai_settings", String::class.java),
+    )
+    assertEquals("new-text", aiSettings.current()!!.provider.textModel)
+    assertEquals(
+      400,
+      adminCall("PUT", path, next + mapOf("revision" to 2, "clearApiKey" to true), browser).status,
+    )
+    assertEquals(
+      200,
+      adminCall(
+          "PUT",
+          path,
+          next + mapOf("revision" to 2, "enabled" to false, "clearApiKey" to true),
+          browser,
+        )
+        .status,
+    )
+    Assertions.assertNull(aiSettings.current())
+    Assertions.assertNull(
+      db.queryForObject("SELECT encrypted_api_key FROM ai_settings", String::class.java)
+    )
+  }
+
+  @Test
+  fun `legacy AI configuration imports once and preserves later database changes`() {
+    val env =
+      org.springframework.mock.env
+        .MockEnvironment()
+        .withProperty("AI_ENABLED", "true")
+        .withProperty("AI_PROVIDER", "openai")
+        .withProperty("AI_BASE_URL", "https://provider.example/v1")
+        .withProperty("AI_API_KEY", "legacy-secret")
+        .withProperty("AI_TEXT_MODEL", "text")
+        .withProperty("AI_VISION_MODEL", "vision")
+    val missing =
+      tech.valerochkagym.service.ai.LegacyAiSettingsImport(
+        env,
+        aiSettings,
+        tech.valerochkagym.service.ai.AiKeyEncryption(env),
+      )
+    assertThrows(IllegalStateException::class.java) {
+      missing.run(org.springframework.boot.DefaultApplicationArguments())
+    }
+    assertEquals(0L, aiSettings.get().revision)
+    env.withProperty(
+      "AI_SETTINGS_ENCRYPTION_KEY",
+      java.util.Base64.getEncoder().encodeToString(ByteArray(32) { 7 }),
+    )
+    val importer =
+      tech.valerochkagym.service.ai.LegacyAiSettingsImport(
+        env,
+        aiSettings,
+        tech.valerochkagym.service.ai.AiKeyEncryption(env),
+      )
+    importer.run(org.springframework.boot.DefaultApplicationArguments())
+    assertEquals("legacy-secret", aiSettings.current()!!.provider.key)
+    assertEquals("text", aiSettings.current()!!.defaultModel)
+    db.update("UPDATE ai_settings SET enabled=false, revision=revision+1")
+    env.withProperty("AI_API_KEY", "different-secret")
+    importer.run(org.springframework.boot.DefaultApplicationArguments())
+    assertEquals(2L, aiSettings.get().revision)
+    assertFalse(aiSettings.get().enabled)
+  }
+
   @Autowired lateinit var migration: tech.valerochkagym.service.catalog.CatalogMigration
 
   @Test
@@ -512,7 +619,7 @@ class BackendIntegrationTest {
         ),
       )
       assertEquals(
-        "15",
+        "16",
         command(
           "psql",
           "-U",
@@ -545,6 +652,9 @@ class BackendIntegrationTest {
       r.add("spring.datasource.username", postgres::getUsername)
       r.add("spring.datasource.password", postgres::getPassword)
       r.add("gym.token-pepper") { "test-pepper-with-at-least-thirty-two-bytes" }
+      r.add("AI_SETTINGS_ENCRYPTION_KEY") {
+        java.util.Base64.getEncoder().encodeToString(ByteArray(32) { 7 })
+      }
       r.add("gym.admin-origin") { "https://admin.test" }
       r.add("gym.google-client-id") { "test-google-client" }
     }
@@ -2063,6 +2173,9 @@ class BackendIntegrationTest {
       "UPDATE catalog_state SET revision=0,active=false,source_user_id=NULL,activated_at=NULL"
     )
     db.update("UPDATE equipment SET archived=false")
+    db.update(
+      "UPDATE ai_settings SET revision=0,enabled=false,encrypted_api_key=NULL,text_model='',vision_model='',coach_model='',coach_models=''"
+    )
     mail.codes.clear()
   }
 
@@ -2284,7 +2397,7 @@ class BackendIntegrationTest {
 
   @Test
   fun `Liquibase has applied auth sync and admin changesets`() {
-    assertEquals(15, db.queryForObject("SELECT count(*) FROM databasechangelog", Int::class.java))
+    assertEquals(16, db.queryForObject("SELECT count(*) FROM databasechangelog", Int::class.java))
   }
 
   @Test
