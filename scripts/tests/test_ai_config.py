@@ -20,6 +20,20 @@ class AiConfigTest(unittest.TestCase):
         for patch in [{'AI_TEXT_MODEL': ''}, {'AI_BASE_URL': 'http://localhost'}, {'AI_API_KEY': 'dummy\nnew'}, {'AI_PROVIDER': 'other'}, {'extra': 'x'}]:
             with self.assertRaises(ValueError):
                 ai.validate(self.settings() | patch)
+    def test_coach_models_are_optional_and_exported_separately(self):
+        settings = self.settings() | {"AI_COACH_MODEL": "coach", "AI_COACH_MODELS": "coach,other"}
+        self.assertEqual(settings, ai.from_environment(settings))
+        self.assertEqual(self.settings(), ai.from_environment(self.settings()))
+
+    def test_invalid_coach_catalogue_does_not_change_destination(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / ".env"
+            target.write_text("unchanged\n")
+            for patch in [{"AI_COACH_MODEL": "x" * 201}, {"AI_COACH_MODELS": ",".join(f"model-{i}" for i in range(21))}]:
+                with self.assertRaises(ValueError):
+                    ai.apply_config(self.settings() | patch, target)
+                self.assertEqual("unchanged\n", target.read_text())
+
     def test_delivery_keeps_other_values_and_cleans_temp_files(self):
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / '.env'

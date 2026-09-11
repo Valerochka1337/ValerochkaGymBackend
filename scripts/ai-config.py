@@ -7,7 +7,10 @@ import re
 import sys
 import tempfile
 
-KEYS = {"AI_ENABLED", "AI_PROVIDER", "AI_BASE_URL", "AI_API_KEY", "AI_TEXT_MODEL", "AI_VISION_MODEL"}
+REQUIRED_KEYS = {"AI_ENABLED", "AI_PROVIDER", "AI_BASE_URL", "AI_API_KEY", "AI_TEXT_MODEL", "AI_VISION_MODEL"}
+
+OPTIONAL_KEYS = {"AI_COACH_MODEL", "AI_COACH_MODELS"}
+KEYS = REQUIRED_KEYS | OPTIONAL_KEYS
 
 class ConfigError(ValueError):
     pass
@@ -20,10 +23,15 @@ def validate(config):
             raise ConfigError("AI settings must be single-line values")
     if config == {"AI_ENABLED": "false"}:
         return config
-    if set(config) != KEYS or config["AI_ENABLED"] != "true" or config["AI_PROVIDER"] != "openai":
+    if not REQUIRED_KEYS.issubset(config) or config["AI_ENABLED"] != "true" or config["AI_PROVIDER"] != "openai":
         raise ConfigError("Incomplete AI configuration")
-    if any(not value.strip() for value in config.values()):
+    if any(not config[key].strip() for key in REQUIRED_KEYS):
         raise ConfigError("Missing AI production setting")
+    default_model = config.get("AI_COACH_MODEL", "")
+    default_model = default_model if default_model.strip() else config["AI_TEXT_MODEL"]
+    coach_models = list(dict.fromkeys([default_model] + [value.strip() for value in config.get("AI_COACH_MODELS", "").split(",") if value.strip()]))
+    if len(coach_models) > 20 or any(len(value) > 200 for value in coach_models):
+        raise ConfigError("Coach model catalogue exceeds limits")
     from urllib.parse import urlsplit
     try:
         uri = urlsplit(config["AI_BASE_URL"])
@@ -37,7 +45,7 @@ def validate(config):
 def from_environment(env):
     if env.get("AI_ENABLED", "false") in ("", "false"):
         return {"AI_ENABLED": "false"}
-    return validate({key: env.get(key, "") for key in KEYS})
+    return validate({key: env.get(key, "") for key in REQUIRED_KEYS} | {key: env[key] for key in OPTIONAL_KEYS if env.get(key, "").strip()})
 
 
 def apply_config(config, destination):

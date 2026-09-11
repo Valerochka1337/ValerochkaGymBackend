@@ -55,3 +55,39 @@ class AiConfiguration {
     else HttpOpenAiChatCompletionsProvider(settings, json)
   }
 }
+
+// Not a data class: provider credentials must not be exposed by a generated toString.
+class CoachProviderSettings(
+  val provider: AiProviderSettings,
+  val defaultModel: String,
+  val models: List<String>,
+) {
+  companion object {
+    fun from(values: (String) -> String?): CoachProviderSettings? {
+      val provider = AiProviderSettings.from(values) ?: return null
+      val default = values("AI_COACH_MODEL")?.takeIf { it.isNotBlank() } ?: provider.textModel
+      val models =
+        (listOf(default) +
+            values("AI_COACH_MODELS")
+              .orEmpty()
+              .split(',')
+              .map { it.trim() }
+              .filter { it.isNotEmpty() })
+          .distinct()
+      if (
+        models.size > 20 ||
+          models.any { it.length > 200 || it.any { char -> char.code < 32 || char.code == 127 } }
+      )
+        return null
+      return CoachProviderSettings(provider, default, models)
+    }
+  }
+}
+
+@Configuration
+class CoachAiConfiguration {
+  @Bean
+  fun coachTurnProvider(env: Environment, json: ObjectMapper): CoachTurnProvider =
+    CoachProviderSettings.from(env::getProperty)?.let { HttpCoachTurnProvider(it, json) }
+      ?: UnconfiguredCoachTurnProvider()
+}

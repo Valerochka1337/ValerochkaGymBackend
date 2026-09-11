@@ -151,6 +151,8 @@ jobs:
           AI_API_KEY: ${{ secrets.AI_API_KEY }}
           AI_TEXT_MODEL: ${{ vars.AI_TEXT_MODEL }}
           AI_VISION_MODEL: ${{ vars.AI_VISION_MODEL }}
+          AI_COACH_MODEL: ${{ vars.AI_COACH_MODEL }}
+          AI_COACH_MODELS: ${{ vars.AI_COACH_MODELS }}
           MAIL_ENABLED: ${{ vars.MAIL_ENABLED }}
           MAIL_FROM: ${{ secrets.MAIL_FROM }}
           SMTP_HOST: ${{ secrets.SMTP_HOST }}

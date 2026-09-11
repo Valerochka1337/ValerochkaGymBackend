@@ -139,3 +139,8 @@ trap; deploy атомарно обновляет только AI-поля `.env`
 [src/test/resources/ai-contract-v1.json](src/test/resources/ai-contract-v1.json).
 Тестовый путь: targeted `AiIntegrationTest`, `AiActionServiceTest`,
 `HttpOpenAiChatCompletionsProviderTest` и `python3 -m unittest discover -s scripts/tests`.
+
+
+### Live Coach
+
+`AI_COACH_MODEL` selects the coach default independently (falls back to `AI_TEXT_MODEL`); `AI_COACH_MODELS` adds allowed model IDs separated by commas. The Android account chooses only from this list. Use a model with Chat Completions function-tool support and run the in-app synthetic compatibility check. Keys/endpoint remain shared server configuration. See [API contract](vibe/live-coach-plan.md).

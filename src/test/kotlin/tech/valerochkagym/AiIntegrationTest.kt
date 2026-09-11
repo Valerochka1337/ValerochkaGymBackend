@@ -65,11 +65,33 @@ class AiIntegrationTest {
     }
   }
 
+  class FakeCoachProvider : CoachTurnProvider {
+    var calls = 0
+    var handler: (CoachTurnInput) -> JsonNode = {
+      tools.jackson.databind.json.JsonMapper.builder()
+        .build()
+        .readTree(
+          "{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"role\":\"assistant\",\"content\":\"Продолжим\"}}]}"
+        )
+    }
+
+    override fun catalog() =
+      CoachModelCatalog("AVAILABLE", "coach-fixture", listOf("coach-fixture"))
+
+    override fun complete(input: CoachTurnInput): JsonNode {
+      calls++
+      return handler(input)
+    }
+  }
+
   @TestConfiguration
   class Fakes {
     @Bean @Primary fun provider() = FakeProvider()
+
+    @Bean @Primary fun coachProvider() = FakeCoachProvider()
   }
 
+  @Autowired lateinit var coachProvider: FakeCoachProvider
   @Autowired lateinit var actions: AiActionService
   @Autowired lateinit var provider: FakeProvider
   @Autowired lateinit var json: ObjectMapper
@@ -571,6 +593,93 @@ class AiIntegrationTest {
       json.readTree("""{"result":{"kind":"EXISTING","exerciseId":"$active"}}""")
     }
     assertEquals(200, call("/v1/ai/exercise-drafts", a, request()).statusCode())
+  }
+
+  @Test
+  fun `coach uses authenticated session without synchronized workout and discards revoked response`() {
+    val a = owner()
+    val request =
+      mapOf(
+        "requestId" to UUID.randomUUID().toString(),
+        "messages" to listOf(mapOf("role" to "user", "content" to "Синтетическая тренировка")),
+        "tools" to
+          CoachTurnService.TOOL_NAMES.map {
+            mapOf(
+              "type" to "function",
+              "function" to
+                mapOf(
+                  "name" to it,
+                  "description" to "Fixture",
+                  "parameters" to mapOf("type" to "object"),
+                ),
+            )
+          },
+      )
+    assertEquals(401, call("/v1/ai/coach-models").statusCode())
+    assertEquals(401, call("/v1/ai/coach-turn", body = request).statusCode())
+    val catalog = call("/v1/ai/coach-models", a)
+    assertEquals(200, catalog.statusCode())
+    assertEquals("coach-fixture", json.readTree(catalog.body())["defaultModel"].asString())
+    val original = coachProvider.handler
+    try {
+      val response = call("/v1/ai/coach-turn", a, request)
+      assertEquals(200, response.statusCode(), response.body())
+      assertEquals(request["requestId"], json.readTree(response.body())["requestId"].asString())
+      assertEquals(0, db.queryForObject("SELECT count(*) FROM records", Int::class.java))
+      assertEquals(0, db.queryForObject("SELECT count(*) FROM sync_operations", Int::class.java))
+      coachProvider.handler = { input ->
+        db.update("UPDATE sessions SET revoked_at=now() WHERE id=?", a.session)
+        original(input)
+      }
+      assertEquals(401, call("/v1/ai/coach-turn", a, request).statusCode())
+    } finally {
+      coachProvider.handler = original
+    }
+  }
+
+  @Test
+  fun `coach ingress caps fixed and chunked input before JSON conversion`() {
+    val a = owner()
+    val prefix =
+      json.writeValueAsBytes(
+        mapOf(
+          "requestId" to UUID.randomUUID().toString(),
+          "messages" to listOf(mapOf("role" to "user", "content" to "Тест")),
+          "tools" to
+            CoachTurnService.TOOL_NAMES.map {
+              mapOf(
+                "type" to "function",
+                "function" to
+                  mapOf(
+                    "name" to it,
+                    "description" to "Fixture",
+                    "parameters" to mapOf("type" to "object"),
+                  ),
+              )
+            },
+        )
+      )
+    fun send(size: Int, chunked: Boolean): HttpResponse<String> {
+      val bytes = prefix + ByteArray(size - prefix.size) { 32 }
+      val request =
+        HttpRequest.newBuilder(URI("http://localhost:$port/v1/ai/coach-turn"))
+          .header("Authorization", "Bearer ${a.token}")
+          .header("Content-Type", "application/json")
+          .POST(
+            if (chunked)
+              HttpRequest.BodyPublishers.ofInputStream { java.io.ByteArrayInputStream(bytes) }
+            else HttpRequest.BodyPublishers.ofByteArray(bytes)
+          )
+          .build()
+      return client.send(request, HttpResponse.BodyHandlers.ofString())
+    }
+    for (chunked in listOf(false, true)) {
+      val exact = send(CoachTurnService.MAX_REQUEST_BYTES, chunked)
+      assertEquals(200, exact.statusCode(), exact.body())
+      val callsBefore = coachProvider.calls
+      assertEquals(413, send(CoachTurnService.MAX_REQUEST_BYTES + 1, chunked).statusCode())
+      assertEquals(callsBefore, coachProvider.calls)
+    }
   }
 
   @Test

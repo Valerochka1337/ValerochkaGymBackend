@@ -324,3 +324,8 @@ prior keys through `gym.coach-relations.retained-key-versions` (comma-separated 
 days after the last issuance under that version. Only current-version keys issue new tokens; retained
 keys only verify. After retirement invitations resolve as absent and cursors return `cursor_key_retired`.
 Keep pepper material in deployment secret configuration, never in source control.
+
+
+## Live Coach
+
+Authenticated `GET /v1/ai/coach-models` and `POST /v1/ai/coach-turn` provide a bounded stateless tool-calling exchange. Request/response contract, limits and model settings: [Live Coach contract](../vibe/live-coach-plan.md). Workout operations execute only in the Android application after local validation and confirmation. These routes do not require a synced active workout or read health/profile records.
