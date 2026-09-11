@@ -120,20 +120,24 @@ PostgreSQL upsert и атомарные операции изолированы 
 
 ## Серверные AI-черновики (default off)
 
-AI exercise/InBody доступен только через авторизованный backend; ручные сценарии и sync работают
-при `AI_ENABLED=false`. Для включения оператор задаёт **все** значения `AI_ENABLED=true`,
-`AI_PROVIDER=openai`, `AI_BASE_URL` (HTTPS origin либо `/v1`), `AI_API_KEY`, `AI_TEXT_MODEL`,
-`AI_VISION_MODEL`. Модель должна поддерживать strict JSON schema, а vision — JPEG image input.
-У ключа/моделей/endpoint нет значений по умолчанию. Android не передаёт BYOK ключ, URL, model
-или готовый prompt. Статус AVAILABLE сообщает о конфигурации и не гарантирует live API.
+AI exercise/InBody доступен только через авторизованный backend. Провайдер, API-ключ,
+модели текста, изображений и тренера настраиваются в **Админка → ИИ** и хранятся в PostgreSQL.
+Изменения применяются к новым запросам без перезапуска. Поддерживается OpenAI-совместимый
+Chat Completions API с HTTPS URL (origin или `/v1`). Модель текста должна поддерживать
+strict JSON schema, vision — JPEG image input, модель тренера — function tools.
 
-CD читает environment `production`: `AI_API_KEY` — secret, остальные `AI_*` — variables;
-если AI_ENABLED не задан, доставка явно выключает AI. `scripts/ai-config.py export` предназначен
-только для перенаправления в private temporary payload; нельзя выводить результат в CI log.
-Workflow доставляет его отдельным файлом с umask077, удаляет локальный/удалённый payload через
-trap; deploy атомарно обновляет только AI-поля `.env`, остальные значения сохраняет. `.env`
-нельзя source: используется Compose quoting. При откате возвращается прежнее окружение.
-Доставка и тесты работают с dummy credentials; production AI не проверялся этой реализацией.
+На сервере задаётся только `AI_SETTINGS_ENCRYPTION_KEY`: Base64 от 32 случайных байт
+(`openssl rand -base64 32`). API-ключ хранится с AES-256-GCM и уникальным случайным nonce.
+Ключ шифрования нужно хранить отдельно от БД и резервировать отдельно; его потеря сделает
+сохранённые креденшелы недоступными. Нельзя менять его без перешифрования или повторного
+ввода API-ключа. Не добавляйте его в git. Production Compose получает его из серверного `.env`.
+
+При первом запуске существующая валидная конфигурация `AI_*` автоматически переносится
+в БД, если настройки ещё не редактировались. Для переноса заранее задайте ключ шифрования:
+при включённой старой конфигурации без него запуск остановится с понятной ошибкой.
+После успешного переноса удалите старые `AI_*` провайдера/моделей из `.env` и GitHub
+Secrets/Variables. CD больше не доставляет настройки провайдера и не перезаписывает их.
+Без старой конфигурации ИИ изначально выключен, настройки вводятся в админке.
 
 Контракт и ошибки — [docs/api.md](docs/api.md), frozen DTO —
 [src/test/resources/ai-contract-v1.json](src/test/resources/ai-contract-v1.json).
@@ -143,4 +147,6 @@ trap; deploy атомарно обновляет только AI-поля `.env`
 
 ### Live Coach
 
-`AI_COACH_MODEL` selects the coach default independently (falls back to `AI_TEXT_MODEL`); `AI_COACH_MODELS` adds allowed model IDs separated by commas. The Android account chooses only from this list. Use a model with Chat Completions function-tool support and run the in-app synthetic compatibility check. Keys/endpoint remain shared server configuration. See [API contract](vibe/live-coach-plan.md).
+Модель тренера по умолчанию и список разрешённых моделей задаются в разделе «ИИ».
+Если модель тренера пуста, используется модель текста. Android выбирает модель только
+из этого списка. См. [API contract](vibe/live-coach-plan.md).

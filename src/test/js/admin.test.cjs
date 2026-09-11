@@ -166,3 +166,26 @@ test('standard template editor saves ordered exercises rest sets and shared gyms
   ui.field('Причина изменения').value='Изменение программы';ui.field('Отдых, секунды').value='120';ui.submit();await until(()=>ui.requests.some(x=>x.method==='PUT'));
   const write=ui.requests.find(x=>x.method==='PUT');assert.equal(write.body.payload.exercises[0].restSeconds,120);assert.equal(write.body.payload.exercises[0].plannedSets[0].reps,8);assert.deepEqual(write.body.payload.gymIds,[gymId]);assert.equal(write.body.payload.exercises[0].position,0);
 });
+
+
+test('AI settings keep the stored key write-only and save with CSRF and revision',async t=>{
+  const data={revision:3,enabled:true,baseUrl:'https://provider.test',textModel:'text',visionModel:'vision',coachModel:'coach',coachModels:['coach'],hasApiKey:true,encryptionAvailable:true};
+  const ui=await setup({
+    'GET /admin/api/ai-settings':()=>({data}),
+    'PUT /admin/api/ai-settings':body=>({data:{...data,revision:4,textModel:body.textModel}}),
+  });
+  t.after(()=>ui.dom.window.close());
+  ui.w.document.querySelector('[data-view=ai]').click();
+  await until(()=>ui.w.document.querySelector('#ai-settings-form'));
+  const key=ui.w.document.getElementById('ai-apiKey');
+  assert.equal(key.type,'password');assert.equal(key.value,'');
+  ui.w.document.getElementById('ai-textModel').value='updated';
+  ui.w.document.getElementById('ai-settings-form').dispatchEvent(new ui.w.Event('submit',{bubbles:true,cancelable:true}));
+  await until(()=>ui.requests.some(r=>r.method==='PUT'));
+  const request=ui.requests.find(r=>r.method==='PUT');
+  assert.equal(request.headers['X-CSRF-Token'],'test-csrf');
+  assert.equal(request.body.revision,3);assert.equal(request.body.textModel,'updated');
+  assert.equal(Object.hasOwn(request.body,'apiKey'),false);
+  assert.equal(ui.w.localStorage.length,0);
+  await until(()=>ui.w.document.getElementById('notice').textContent==='Настройки ИИ сохранены');
+});

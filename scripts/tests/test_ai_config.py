@@ -69,7 +69,8 @@ class AiConfigTest(unittest.TestCase):
         root = SCRIPT.parents[1]
         workflow = (root / '.github/workflows/backend.yml').read_text()
         deploy = (root / 'scripts/deploy.sh').read_text()
-        self.assertIn('"$ai_payload"', workflow)
+        self.assertNotIn('python3 scripts/ai-config.py export', workflow)
+        self.assertNotIn('secrets.AI_API_KEY', workflow)
         self.assertIn('incoming/ai.json', workflow)
         self.assertIn('incoming/smtp.json incoming/ai.json', deploy)
         self.assertNotIn('set -x', workflow + deploy)
@@ -94,7 +95,7 @@ class AiConfigTest(unittest.TestCase):
             if fail:
                 self.assertEqual(original, (root / '.env').read_text())
             else:
-                self.assertIn('AI_ENABLED="true"', (root / '.env').read_text())
+                self.assertIn('AI_ENABLED=false', (root / '.env').read_text())
                 self.assertIn('DATABASE_PASSWORD=untouched', (root / '.env').read_text())
 
     def test_successful_delivery_removes_payload_without_echo(self):
