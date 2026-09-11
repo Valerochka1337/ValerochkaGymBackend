@@ -11,7 +11,7 @@ cp .env "$env_backup"
 cleanup() {
   local status=$?
   if [[ "$status" != 0 && -f "$env_backup" ]]; then cp "$env_backup" .env; fi
-  rm -f "$env_backup" incoming/smtp.json incoming/ai.json
+  rm -f "$env_backup" incoming/smtp.json incoming/ai.json incoming/ai-encryption.json
 }
 trap cleanup EXIT
 compose=(docker compose --env-file .env -f compose.production.yaml)
@@ -20,6 +20,13 @@ docker pull "$new_image"
 if [[ -f incoming/admin-role.sh ]]; then install -m 0755 incoming/admin-role.sh admin-role.sh; fi
 if [[ -f incoming/admin-password.sh ]]; then install -m 0755 incoming/admin-password.sh admin-password.sh; fi
 if "${compose[@]}" ps --status running --services | grep -qx postgres; then ./backup.sh; fi
+if [[ -f incoming/ai-encryption.json ]]; then
+  install -m 0755 incoming/ai-encryption-config.py ai-encryption-config.py
+  # Database migrations survive an application rollback, so retain a newly installed key too.
+  python3 ai-encryption-config.py apply incoming/ai-encryption.json "$env_backup"
+  python3 ai-encryption-config.py apply incoming/ai-encryption.json .env
+  rm -f incoming/ai-encryption.json
+fi
 if [[ -f incoming/smtp.json ]]; then
   install -m 0755 incoming/smtp-config.py smtp-config.py
   python3 smtp-config.py apply incoming/smtp.json .env
