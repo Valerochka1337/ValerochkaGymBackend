@@ -463,6 +463,16 @@ class TrainingProposalService(
           TrainingProposalStatus.STALE -> return@execute ApprovalAttempt.Failure("proposal_stale")
           TrainingProposalStatus.PENDING -> Unit
         }
+        if (
+          relations.jdbc.queryForObject(
+            "SELECT count(*) FROM calendar_draft_jobs WHERE owner_id=? AND proposal_id=? AND (NOT current_job OR state<>'READY' OR (intent->>'startsAtMillis')::bigint<=?)",
+            Long::class.java,
+            identity.userId,
+            proposal.id,
+            clock.millis(),
+          )!! > 0
+        )
+          return@execute ApprovalAttempt.Failure("proposal_stale")
         if (proposal.source == TrainingProposalSource.COACH)
           requireOriginCapability(
             proposal.authorId ?: error("proposal_stale"),

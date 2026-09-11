@@ -42,7 +42,10 @@ import tools.jackson.databind.ObjectMapper
 import tools.jackson.databind.node.ObjectNode
 
 @Testcontainers
-@SpringBootTest(classes = [Application::class, CalendarAiCaptureIntegrationTest.Fakes::class])
+@SpringBootTest(
+  classes = [Application::class, CalendarAiCaptureIntegrationTest.Fakes::class],
+  properties = ["gym.calendar-jobs.enabled=false"],
+)
 class CalendarAiCaptureIntegrationTest {
   companion object {
     private val capturedAt = 1_805_005_800_000L
@@ -112,17 +115,29 @@ class CalendarAiCaptureIntegrationTest {
     fun open() = release.countDown()
   }
 
+  class MutableCalendarClock : Clock() {
+    var currentTime = capturedAt
+
+    override fun instant(): Instant = Instant.ofEpochMilli(currentTime)
+
+    override fun getZone(): java.time.ZoneId = ZoneOffset.UTC
+
+    override fun withZone(zone: java.time.ZoneId): Clock = Clock.fixed(instant(), zone)
+  }
+
   @TestConfiguration
   class Fakes {
     @Bean @Primary fun provider() = FakeProvider()
 
     @Bean @Primary fun calendarHooks() = BarrierHooks()
 
-    @Bean
-    @Primary
-    fun fixedCalendarClock(): Clock = Clock.fixed(Instant.ofEpochMilli(capturedAt), ZoneOffset.UTC)
+    @Bean @Primary fun fixedCalendarClock() = MutableCalendarClock()
   }
 
+  @Autowired lateinit var jobs: tech.valerochkagym.service.ai.CalendarDraftJobService
+  @Autowired
+  lateinit var proposals: tech.valerochkagym.service.trainingproposal.TrainingProposalService
+  @Autowired lateinit var testClock: MutableCalendarClock
   @Autowired lateinit var actions: AiActionService
   @Autowired lateinit var contexts: AiContextReader
   @Autowired lateinit var provider: FakeProvider
@@ -133,6 +148,7 @@ class CalendarAiCaptureIntegrationTest {
   @BeforeEach
   @AfterEach
   fun reset() {
+    testClock.currentTime = capturedAt
     db.execute(
       "TRUNCATE sessions,refresh_tokens,email_challenges,google_nonces,rate_limits,users,standard_records CASCADE"
     )
@@ -1033,6 +1049,291 @@ class CalendarAiCaptureIntegrationTest {
       db.queryForObject("SELECT state FROM calendar_ai_attempts", String::class.java),
     )
     assertEquals(0, db.queryForObject("SELECT count(*) FROM training_proposals", Int::class.java))
+  }
+
+  @Test
+  fun `job acceptance survives lost acknowledgement and only worker creates proposal`() {
+    val owner = owner()
+    val exercise = exercise(owner)
+    provider.handler = { providerResponse(exercise) }
+    val raw = rawRequest()
+    val first = jobs.submit(owner, raw)
+    assertEquals("QUEUED", first.state)
+    assertEquals(first, jobs.submit(owner, raw))
+    assertEquals(0, provider.calls)
+    assertEquals(0, db.queryForObject("SELECT count(*) FROM training_proposals", Int::class.java))
+    jobs.runNext()
+    val ready = jobs.status(owner, UUID.fromString(first.requestId))
+    assertEquals("READY", ready.state)
+    assertEquals(first.requestId, ready.result!!.requestId)
+    assertEquals(ready, jobs.submit(owner, raw))
+    jobs.runNext()
+    assertEquals(1, provider.calls)
+    assertEquals(1, db.queryForObject("SELECT count(*) FROM training_proposals", Int::class.java))
+    assertEquals(
+      0,
+      db.queryForObject("SELECT count(*) FROM records WHERE kind='calendar_plan'", Int::class.java),
+    )
+  }
+
+  @Test
+  fun `out of order replacement lineage tombstones never restore old requests`() {
+    val owner = owner()
+    val a = rawRequest()
+    val b = rawRequest()
+    val aId = json.readTree(a)["requestId"].asString()
+    val bId = json.readTree(b)["requestId"].asString()
+    val c = json.readTree(rawRequest()) as ObjectNode
+    c.putArray("replacesRequestIds").add(aId).add(bId)
+    val current = jobs.submit(owner, json.writeValueAsBytes(c))
+    assertEquals("SUPERSEDED", jobs.submit(owner, a).state)
+    assertEquals("SUPERSEDED", jobs.submit(owner, b).state)
+    assertEquals("QUEUED", jobs.status(owner, UUID.fromString(current.requestId)).state)
+    assertEquals(
+      1,
+      db.queryForObject(
+        "SELECT count(*) FROM calendar_draft_jobs WHERE current_job",
+        Int::class.java,
+      ),
+    )
+  }
+
+  @Test
+  fun `expired lease recovers work after restart without duplicating a ready result`() {
+    val owner = owner()
+    val exercise = exercise(owner)
+    provider.handler = { providerResponse(exercise) }
+    val job = jobs.submit(owner, rawRequest())
+    db.update(
+      "UPDATE calendar_draft_jobs SET state='RUNNING',executions=1,lease_token=?,lease_until=?",
+      UUID.randomUUID(),
+      Timestamp.from(Instant.ofEpochMilli(capturedAt - 1)),
+    )
+    jobs.runNext()
+    assertEquals("READY", jobs.status(owner, UUID.fromString(job.requestId)).state)
+    assertEquals(
+      2,
+      db.queryForObject("SELECT executions FROM calendar_draft_jobs", Int::class.java),
+    )
+    jobs.runNext()
+    assertEquals(1, provider.calls)
+  }
+
+  @Test
+  fun `restart retries are bounded`() {
+    val owner = owner()
+    val job = jobs.submit(owner, rawRequest())
+    db.update(
+      "UPDATE calendar_draft_jobs SET state='RUNNING',executions=3,lease_token=?,lease_until=?",
+      UUID.randomUUID(),
+      Timestamp.from(Instant.ofEpochMilli(capturedAt - 1)),
+    )
+    jobs.runNext()
+    assertEquals("FAILED", jobs.status(owner, UUID.fromString(job.requestId)).state)
+    assertEquals(0, provider.calls)
+  }
+
+  @Test
+  fun `late provider result cannot publish after changing conditions`() {
+    val owner = owner()
+    val exercise = exercise(owner)
+    val old = jobs.submit(owner, rawRequest())
+    provider.handler = {
+      jobs.submit(owner, rawRequest())
+      providerResponse(exercise)
+    }
+    jobs.runNext()
+    assertEquals("SUPERSEDED", jobs.status(owner, UUID.fromString(old.requestId)).state)
+    assertEquals(0, db.queryForObject("SELECT count(*) FROM training_proposals", Int::class.java))
+  }
+
+  @Test
+  fun `ready superseded proposal remains readable but cannot be approved`() {
+    val owner = owner()
+    val exercise = exercise(owner)
+    provider.handler = { providerResponse(exercise) }
+    val job = jobs.submit(owner, rawRequest())
+    jobs.runNext()
+    val ready = jobs.status(owner, UUID.fromString(job.requestId)).result!!
+    jobs.submit(owner, rawRequest())
+    val request =
+      tech.valerochkagym.controller.model.ApprovalRequest(
+        UUID.randomUUID().toString(),
+        1,
+        ready.proposal.snapshot.draft,
+      )
+    assertEquals(
+      "proposal_stale",
+      assertThrows<ApiException> {
+          proposals.approve(
+            owner,
+            ready.proposal.proposalId,
+            json.writeValueAsBytes(request),
+            "0".repeat(64),
+            request,
+          )
+        }
+        .code,
+    )
+    assertEquals(1, db.queryForObject("SELECT count(*) FROM training_proposals", Int::class.java))
+    assertEquals("SUPERSEDED", jobs.status(owner, UUID.fromString(job.requestId)).state)
+  }
+
+  @Test
+  fun `changed history invalidates job before provider and other owner cannot see it`() {
+    val owner = owner()
+    val other = owner()
+    val job = jobs.submit(owner, rawRequest())
+    assertEquals(
+      404,
+      assertThrows<ApiException> { jobs.status(other, UUID.fromString(job.requestId)) }.status,
+    )
+    db.update("UPDATE sync_heads SET revision=18 WHERE user_id=?", owner.userId)
+    jobs.runNext()
+    assertEquals("STALE", jobs.status(owner, UUID.fromString(job.requestId)).state)
+    assertEquals(0, provider.calls)
+  }
+
+  @Test
+  fun `date already passed yields explicit expired state and no provider request`() {
+    val owner = owner()
+    val raw = json.readTree(rawRequest()) as ObjectNode
+    raw.put("startsAtMillis", capturedAt - 1)
+    val job = jobs.submit(owner, json.writeValueAsBytes(raw))
+    assertEquals("EXPIRED", job.state)
+    jobs.runNext()
+    assertEquals(0, provider.calls)
+  }
+
+  @Test
+  fun `invalid provider output persists only fixed error code`() {
+    val owner = owner()
+    exercise(owner)
+    provider.handler = { throw IllegalStateException("secret raw content") }
+    val job = jobs.submit(owner, rawRequest())
+    jobs.runNext()
+    val failed = jobs.status(owner, UUID.fromString(job.requestId))
+    assertEquals("FAILED", failed.state)
+    assertEquals("ai_invalid_response", failed.errorCode)
+    assertNull(failed.result)
+  }
+
+  @Test
+  fun `cancellation before acknowledgement tombstones the delayed delivery`() {
+    val owner = owner()
+    val raw = rawRequest()
+    val id = UUID.fromString(json.readTree(raw)["requestId"].asString())
+    jobs.cancel(owner, id)
+    jobs.cancel(owner, id)
+    assertEquals("SUPERSEDED", jobs.submit(owner, raw).state)
+    jobs.runNext()
+    assertEquals(0, provider.calls)
+  }
+
+  @Test
+  fun `ready job becomes stale on read after history change`() {
+    val owner = owner()
+    val exercise = exercise(owner)
+    provider.handler = { providerResponse(exercise) }
+    val job = jobs.submit(owner, rawRequest())
+    jobs.runNext()
+    db.update("UPDATE sync_heads SET revision=18 WHERE user_id=?", owner.userId)
+    val stale = jobs.status(owner, UUID.fromString(job.requestId))
+    assertEquals("STALE", stale.state)
+    assertTrue(stale.result != null)
+  }
+
+  @Test
+  fun `revoked session cannot execute a queued job`() {
+    val owner = owner()
+    val job = jobs.submit(owner, rawRequest())
+    db.update(
+      "UPDATE sessions SET revoked_at=? WHERE id=?",
+      Timestamp.from(Instant.ofEpochMilli(capturedAt)),
+      owner.sessionId,
+    )
+    jobs.runNext()
+    assertEquals(
+      "FAILED",
+      db.queryForObject(
+        "SELECT state FROM calendar_draft_jobs WHERE request_id=?",
+        String::class.java,
+        UUID.fromString(job.requestId),
+      ),
+    )
+    assertEquals(0, provider.calls)
+  }
+
+  @Test
+  fun `reclaimed lease fences late execution and inserts exactly one proposal`() {
+    val owner = owner()
+    val exercise = exercise(owner)
+    val job = jobs.submit(owner, rawRequest())
+    provider.handler = {
+      provider.handler = { providerResponse(exercise) }
+      db.update(
+        "UPDATE calendar_draft_jobs SET lease_until=?",
+        Timestamp.from(Instant.ofEpochMilli(capturedAt - 1)),
+      )
+      jobs.runNext()
+      providerResponse(exercise)
+    }
+    jobs.runNext()
+    assertEquals("READY", jobs.status(owner, UUID.fromString(job.requestId)).state)
+    assertEquals(2, provider.calls)
+    assertEquals(1, db.queryForObject("SELECT count(*) FROM training_proposals", Int::class.java))
+  }
+
+  @Test
+  fun `changed bytes for existing job identity conflict without more work`() {
+    val owner = owner()
+    val raw = rawRequest()
+    jobs.submit(owner, raw)
+    val altered = json.readTree(raw) as ObjectNode
+    altered.put("availableDurationMinutes", 60)
+    assertEquals(
+      "ai_request_conflict",
+      assertThrows<ApiException> { jobs.submit(owner, json.writeValueAsBytes(altered)) }.code,
+    )
+    assertEquals(1, db.queryForObject("SELECT count(*) FROM calendar_draft_jobs", Int::class.java))
+  }
+
+  @Test
+  fun `expired preparation cannot approve a moved draft without refreshing job status`() {
+    val owner = owner()
+    val exercise = exercise(owner)
+    provider.handler = { providerResponse(exercise) }
+    val job = jobs.submit(owner, rawRequest())
+    jobs.runNext()
+    val ready = jobs.status(owner, UUID.fromString(job.requestId)).result!!
+    testClock.currentTime = capturedAt + 3_600_001
+    val request =
+      tech.valerochkagym.controller.model.ApprovalRequest(
+        UUID.randomUUID().toString(),
+        1,
+        ready.proposal.snapshot.draft.copy(startsAtMillis = capturedAt + 7_200_000),
+      )
+    assertEquals(
+      "READY",
+      db.queryForObject("SELECT state FROM calendar_draft_jobs", String::class.java),
+    )
+    assertEquals(
+      "proposal_stale",
+      assertThrows<ApiException> {
+          proposals.approve(
+            owner,
+            ready.proposal.proposalId,
+            json.writeValueAsBytes(request),
+            "0".repeat(64),
+            request,
+          )
+        }
+        .code,
+    )
+    assertEquals(
+      0,
+      db.queryForObject("SELECT count(*) FROM records WHERE kind='calendar_plan'", Int::class.java),
+    )
   }
 
   private fun rawRequest(
