@@ -53,6 +53,67 @@ class CoachTurnServiceTest {
   private fun bytes(body: Any) = json.writeValueAsBytes(body)
 
   @Test
+  fun `active legacy and streaming turns share global admission`() {
+    val entered = java.util.concurrent.CountDownLatch(1)
+    val release = java.util.concurrent.CountDownLatch(1)
+    val fake = Fake()
+    val provider =
+      object : CoachTurnProvider {
+        override fun catalog() = fake.catalog()
+
+        override fun complete(input: CoachTurnInput): JsonNode {
+          entered.countDown()
+          release.await()
+          return fake.complete(input)
+        }
+      }
+    val service = CoachTurnService(provider, json)
+    val legacy = java.util.concurrent.CompletableFuture.supplyAsync { service.turn(bytes(body())) }
+    assertTrue(entered.await(2, java.util.concurrent.TimeUnit.SECONDS))
+    try {
+      service.prepareStream(bytes(body())).use {
+        assertEquals(
+          "ai_busy",
+          assertThrows(ApiException::class.java) { service.prepareStream(bytes(body())) }.code,
+        )
+        assertEquals(
+          "ai_busy",
+          assertThrows(ApiException::class.java) { service.turn(bytes(body())) }.code,
+        )
+      }
+    } finally {
+      release.countDown()
+    }
+    legacy.get(2, java.util.concurrent.TimeUnit.SECONDS)
+    service.prepareStream(bytes(body())).use { service.turn(bytes(body())) }
+  }
+
+  @Test
+  fun `both routes share permits and stream release is idempotent`() {
+    val service = CoachTurnService(Fake(), json)
+    val first = service.prepareStream(bytes(body()))
+    val second = service.prepareStream(bytes(body()))
+    assertEquals(
+      "ai_busy",
+      assertThrows(ApiException::class.java) { service.turn(bytes(body())) }.code,
+    )
+    assertEquals(
+      "ai_busy",
+      assertThrows(ApiException::class.java) { service.prepareStream(bytes(body())) }.code,
+    )
+    first.close()
+    first.close()
+    service.turn(bytes(body()))
+    val third = service.prepareStream(bytes(body()))
+    assertEquals(
+      "ai_busy",
+      assertThrows(ApiException::class.java) { service.turn(bytes(body())) }.code,
+    )
+    second.close()
+    third.close()
+  }
+
+  @Test
   fun `turn uses allowlisted coach model without needing synced workout`() {
     val fake = Fake()
     val service = CoachTurnService(fake, json)

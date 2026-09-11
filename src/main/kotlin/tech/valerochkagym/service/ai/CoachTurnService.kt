@@ -27,6 +27,9 @@ interface CoachTurnProvider {
   fun catalog(): CoachModelCatalog
 
   fun complete(input: CoachTurnInput): JsonNode
+
+  fun stream(input: CoachTurnInput, delta: (String) -> Unit): JsonNode =
+    throw aiError("ai_unavailable")
 }
 
 class UnconfiguredCoachTurnProvider : CoachTurnProvider {
@@ -51,6 +54,27 @@ class CoachTurnService(private val provider: CoachTurnProvider, private val json
       return CoachTurnResponse(input.requestId, input.model, completion)
     } finally {
       permits.release()
+    }
+  }
+
+  fun prepareStream(raw: ByteArray): StreamTurn {
+    val input = parse(raw)
+    if (!permits.tryAcquire()) throw aiError("ai_busy")
+    return StreamTurn(input)
+  }
+
+  inner class StreamTurn(val input: CoachTurnInput) : AutoCloseable {
+    private val closed = java.util.concurrent.atomic.AtomicBoolean()
+
+    fun run(delta: (String) -> Unit): CoachTurnResponse =
+      CoachTurnResponse(
+        input.requestId,
+        input.model,
+        CoachCompletionSanitizer.sanitize(provider.stream(input, delta), json),
+      )
+
+    override fun close() {
+      if (closed.compareAndSet(false, true)) permits.release()
     }
   }
 

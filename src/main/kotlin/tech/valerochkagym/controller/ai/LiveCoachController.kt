@@ -11,9 +11,34 @@ import tech.valerochkagym.service.model.Identity
 
 @RestController
 @RequestMapping("/v1/ai")
-class LiveCoachController(private val service: CoachTurnService, private val limits: RateLimiter) {
+class LiveCoachController(
+  private val service: CoachTurnService,
+  private val limits: RateLimiter,
+  private val auth: tech.valerochkagym.service.auth.AuthService,
+) {
   @GetMapping("/coach-models")
   fun models(@AuthenticationPrincipal identity: Identity) = service.catalog()
+
+  @PostMapping(
+    "/coach-turn/stream",
+    consumes = ["application/json"],
+    produces = ["text/event-stream"],
+  )
+  fun stream(
+    @AuthenticationPrincipal identity: Identity,
+    @RequestHeader("Authorization") authorization: String,
+    @RequestBody raw: ByteArray,
+    response: jakarta.servlet.http.HttpServletResponse,
+  ): org.springframework.web.servlet.mvc.method.annotation.SseEmitter {
+    limits.check("coach:${identity.userId}", 30)
+    val turn = service.prepareStream(raw)
+    response.setHeader("Cache-Control", "no-store")
+    response.setHeader("X-Accel-Buffering", "no")
+    return CoachStreamExchange(turn, response) {
+        auth.authenticate(authorization.removePrefix("Bearer ")) == identity
+      }
+      .start()
+  }
 
   @PostMapping("/coach-turn", consumes = ["application/json"])
   fun turn(

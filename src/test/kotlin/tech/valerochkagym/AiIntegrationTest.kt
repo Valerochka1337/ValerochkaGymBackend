@@ -66,6 +66,14 @@ class AiIntegrationTest {
   }
 
   class FakeCoachProvider : CoachTurnProvider {
+    var streamHandler: (CoachTurnInput, (String) -> Unit) -> JsonNode = { input, delta ->
+      delta("Продолжим")
+      handler(input)
+    }
+
+    override fun stream(input: CoachTurnInput, delta: (String) -> Unit) =
+      streamHandler(input, delta)
+
     var calls = 0
     var handler: (CoachTurnInput) -> JsonNode = {
       tools.jackson.databind.json.JsonMapper.builder()
@@ -145,6 +153,7 @@ class AiIntegrationTest {
     val request =
       HttpRequest.newBuilder(URI("http://localhost:$port$path"))
         .header("Content-Type", "application/json")
+    if (path == "/v1/ai/coach-turn/stream") request.header("Accept", "text/event-stream")
     owner?.let { request.header("Authorization", "Bearer ${it.token}") }
     if (path == "/v1/ai/inbody-drafts") request.header("X-Health-AI-Disclosure-Revision", "1")
     request.method(
@@ -637,6 +646,255 @@ class AiIntegrationTest {
     }
   }
 
+  private fun coachRequest() =
+    mapOf(
+      "requestId" to UUID.randomUUID().toString(),
+      "messages" to listOf(mapOf("role" to "user", "content" to "Тест")),
+      "tools" to
+        CoachTurnService.TOOL_NAMES.map {
+          mapOf(
+            "type" to "function",
+            "function" to
+              mapOf(
+                "name" to it,
+                "description" to "Fixture",
+                "parameters" to mapOf("type" to "object"),
+              ),
+          )
+        },
+    )
+
+  @Test
+  fun `coach stream flushes early and emits one terminal event including on revocation`() {
+    for (revoke in listOf(false, true)) {
+      val a = owner()
+      val release = CountDownLatch(1)
+      val ended = CountDownLatch(1)
+      val original = coachProvider.streamHandler
+      coachProvider.streamHandler = { input, delta ->
+        try {
+          delta("Первый фрагмент")
+          release.await(5, TimeUnit.SECONDS)
+          coachProvider.handler(input)
+        } finally {
+          ended.countDown()
+        }
+      }
+      try {
+        val request =
+          HttpRequest.newBuilder(URI("http://localhost:$port/v1/ai/coach-turn/stream"))
+            .header("Authorization", "Bearer ${a.token}")
+            .header("Content-Type", "application/json")
+            .POST(HttpRequest.BodyPublishers.ofString(json.writeValueAsString(coachRequest())))
+            .build()
+        val response = client.send(request, HttpResponse.BodyHandlers.ofInputStream())
+        assertEquals(200, response.statusCode())
+        assertTrue(
+          response.headers().firstValue("Content-Type").orElse("").startsWith("text/event-stream")
+        )
+        assertEquals("no-store", response.headers().firstValue("Cache-Control").orElse(""))
+        assertEquals("no", response.headers().firstValue("X-Accel-Buffering").orElse(""))
+        response.body().bufferedReader().use { reader ->
+          val reading =
+            CompletableFuture.supplyAsync {
+              generateSequence { reader.readLine() }.first { it.startsWith("data:") }
+            }
+          assertTrue(reading.get(3, TimeUnit.SECONDS).contains("Первый фрагмент"))
+          assertEquals(1L, ended.count)
+          if (revoke) db.update("UPDATE sessions SET revoked_at=now() WHERE id=?", a.session)
+          release.countDown()
+          val rest = CompletableFuture.supplyAsync { reader.readText() }.get(3, TimeUnit.SECONDS)
+          assertEquals(1, Regex("event:(completed|error)").findAll(rest).count(), rest)
+          assertTrue(rest.contains(if (revoke) "event:error" else "event:completed"), rest)
+          if (revoke) assertTrue(rest.contains("unauthorized"), rest)
+        }
+        assertTrue(ended.await(2, TimeUnit.SECONDS))
+      } finally {
+        release.countDown()
+        coachProvider.streamHandler = original
+      }
+    }
+  }
+
+  @Test
+  fun `nginx forwards first coach delta while generation is still pending`() {
+    org.testcontainers.Testcontainers.exposeHostPorts(port)
+    val source = java.nio.file.Files.readString(java.nio.file.Path.of("infra/nginx.conf"))
+    val location =
+      source
+        .substringAfter("    location = /v1/ai/coach-turn/stream {")
+        .substringBefore("    }")
+        .replace("127.0.0.1:18080", "host.testcontainers.internal:$port")
+    class Nginx : org.testcontainers.containers.GenericContainer<Nginx>("nginx:1.28-alpine")
+    Nginx()
+      .withExposedPorts(8080)
+      .withCopyToContainer(
+        org.testcontainers.images.builder.Transferable.of(
+          "events {} http { server { listen 8080; location = /v1/ai/coach-turn/stream { $location } } }"
+        ),
+        "/etc/nginx/nginx.conf",
+      )
+      .use { nginx ->
+        nginx.start()
+        val a = owner()
+        val release = CountDownLatch(1)
+        val original = coachProvider.streamHandler
+        coachProvider.streamHandler = { input, delta ->
+          delta("Через Nginx")
+          release.await(5, TimeUnit.SECONDS)
+          coachProvider.handler(input)
+        }
+        try {
+          val request =
+            HttpRequest.newBuilder(
+                URI("http://${nginx.host}:${nginx.getMappedPort(8080)}/v1/ai/coach-turn/stream")
+              )
+              .header("Authorization", "Bearer ${a.token}")
+              .header("Content-Type", "application/json")
+              .POST(HttpRequest.BodyPublishers.ofString(json.writeValueAsString(coachRequest())))
+              .build()
+          val response = client.send(request, HttpResponse.BodyHandlers.ofInputStream())
+          assertEquals(200, response.statusCode())
+          response.body().bufferedReader().use { reader ->
+            val delta =
+              CompletableFuture.supplyAsync {
+                generateSequence { reader.readLine() }.first { it.startsWith("data:") }
+              }
+            assertTrue(delta.get(3, TimeUnit.SECONDS).contains("Через Nginx"))
+            assertEquals(1L, release.count)
+            release.countDown()
+            assertTrue(
+              CompletableFuture.supplyAsync { reader.readText() }
+                .get(3, TimeUnit.SECONDS)
+                .contains("event:completed")
+            )
+          }
+        } finally {
+          release.countDown()
+          coachProvider.streamHandler = original
+        }
+      }
+  }
+
+  @Autowired lateinit var coachService: CoachTurnService
+
+  private fun assertCoachSlotsFree() {
+    coachService.prepareStream(json.writeValueAsBytes(coachRequest())).use {
+      coachService.prepareStream(json.writeValueAsBytes(coachRequest())).close()
+    }
+  }
+
+  @Test
+  fun `idle revoked stream cancels provider on heartbeat and releases slot`() {
+    val a = owner()
+    val ended = CountDownLatch(1)
+    val original = coachProvider.streamHandler
+    coachProvider.streamHandler = { input, delta ->
+      try {
+        delta("Начало")
+        Thread.sleep(30000)
+        coachProvider.handler(input)
+      } finally {
+        ended.countDown()
+      }
+    }
+    try {
+      val request =
+        HttpRequest.newBuilder(URI("http://localhost:$port/v1/ai/coach-turn/stream"))
+          .header("Authorization", "Bearer ${a.token}")
+          .header("Content-Type", "application/json")
+          .POST(HttpRequest.BodyPublishers.ofString(json.writeValueAsString(coachRequest())))
+          .build()
+      client.send(request, HttpResponse.BodyHandlers.ofInputStream()).body().bufferedReader().use {
+        reader ->
+        generateSequence { reader.readLine() }.first { it.startsWith("data:") }
+        db.update("UPDATE sessions SET revoked_at=now() WHERE id=?", a.session)
+        val tail = CompletableFuture.supplyAsync { reader.readText() }.get(13, TimeUnit.SECONDS)
+        assertTrue(tail.contains("unauthorized"), tail)
+        assertFalse(tail.contains("event:completed"), tail)
+      }
+      assertTrue(ended.await(2, TimeUnit.SECONDS))
+      assertCoachSlotsFree()
+    } finally {
+      coachProvider.streamHandler = original
+    }
+  }
+
+  @Test
+  fun `client disconnect cancels generating stream and releases slot`() {
+    val a = owner()
+    val ended = CountDownLatch(1)
+    val original = coachProvider.streamHandler
+    coachProvider.streamHandler = { _, delta ->
+      try {
+        while (true) {
+          delta("x".repeat(1000))
+          Thread.sleep(10)
+        }
+        error("unreachable")
+      } finally {
+        ended.countDown()
+      }
+    }
+    try {
+      val request =
+        HttpRequest.newBuilder(URI("http://localhost:$port/v1/ai/coach-turn/stream"))
+          .header("Authorization", "Bearer ${a.token}")
+          .header("Content-Type", "application/json")
+          .POST(HttpRequest.BodyPublishers.ofString(json.writeValueAsString(coachRequest())))
+          .build()
+      client.send(request, HttpResponse.BodyHandlers.ofInputStream()).body().use { it.read() }
+      assertTrue(ended.await(5, TimeUnit.SECONDS))
+      assertCoachSlotsFree()
+    } finally {
+      coachProvider.streamHandler = original
+    }
+  }
+
+  @Test
+  fun `stream total deadline emits timeout cancels provider and releases slot`() {
+    val a = owner()
+    val ended = CountDownLatch(1)
+    val original = coachProvider.streamHandler
+    coachProvider.streamHandler = { input, delta ->
+      try {
+        delta("Начало")
+        Thread.sleep(60000)
+        coachProvider.handler(input)
+      } finally {
+        ended.countDown()
+      }
+    }
+    try {
+      val result =
+        CompletableFuture.supplyAsync { call("/v1/ai/coach-turn/stream", a, coachRequest()) }
+          .get(49, TimeUnit.SECONDS)
+      assertEquals(200, result.statusCode())
+      assertTrue(result.body().contains("ai_timeout"), result.body())
+      assertEquals(1, Regex("event:(completed|error)").findAll(result.body()).count())
+      assertTrue(ended.await(2, TimeUnit.SECONDS))
+      assertCoachSlotsFree()
+    } finally {
+      coachProvider.streamHandler = original
+    }
+  }
+
+  @Test
+  fun `stream rejects unauthenticated invalid and rate limited input before SSE`() {
+    val route = "/v1/ai/coach-turn/stream"
+    assertEquals(401, call(route, body = coachRequest()).statusCode())
+    val a = owner()
+    assertEquals(400, call(route, a, emptyMap<String, Any>()).statusCode())
+    repeat(29) {
+      assertEquals(400, call("/v1/ai/coach-turn", a, emptyMap<String, Any>()).statusCode())
+    }
+    val limited = call(route, a, coachRequest())
+    assertEquals(429, limited.statusCode())
+    assertTrue(
+      limited.headers().firstValue("Content-Type").orElse("").startsWith("application/json")
+    )
+  }
+
   @Test
   fun `coach ingress caps fixed and chunked input before JSON conversion`() {
     val a = owner()
@@ -659,10 +917,10 @@ class AiIntegrationTest {
             },
         )
       )
-    fun send(size: Int, chunked: Boolean): HttpResponse<String> {
+    fun send(size: Int, chunked: Boolean, route: String): HttpResponse<String> {
       val bytes = prefix + ByteArray(size - prefix.size) { 32 }
       val request =
-        HttpRequest.newBuilder(URI("http://localhost:$port/v1/ai/coach-turn"))
+        HttpRequest.newBuilder(URI("http://localhost:$port$route"))
           .header("Authorization", "Bearer ${a.token}")
           .header("Content-Type", "application/json")
           .POST(
@@ -673,11 +931,12 @@ class AiIntegrationTest {
           .build()
       return client.send(request, HttpResponse.BodyHandlers.ofString())
     }
-    for (chunked in listOf(false, true)) {
-      val exact = send(CoachTurnService.MAX_REQUEST_BYTES, chunked)
+    for (route in listOf("/v1/ai/coach-turn", "/v1/ai/coach-turn/stream")) for (chunked in
+      listOf(false, true)) {
+      val exact = send(CoachTurnService.MAX_REQUEST_BYTES, chunked, route)
       assertEquals(200, exact.statusCode(), exact.body())
       val callsBefore = coachProvider.calls
-      assertEquals(413, send(CoachTurnService.MAX_REQUEST_BYTES + 1, chunked).statusCode())
+      assertEquals(413, send(CoachTurnService.MAX_REQUEST_BYTES + 1, chunked, route).statusCode())
       assertEquals(callsBefore, coachProvider.calls)
     }
   }
@@ -688,6 +947,11 @@ class AiIntegrationTest {
     val response = call("/v3/api-docs", a)
     assertEquals(200, response.statusCode())
     val doc = json.readTree(response.body())
+    assertTrue(
+      doc["paths"]["/v1/ai/coach-turn/stream"]["post"]["responses"]["200"]["content"].has(
+        "text/event-stream"
+      )
+    )
     assertTrue(doc["paths"].has("/v1/ai/inbody-drafts"))
     assertTrue(doc["paths"].has("/v1/ai/calendar-drafts"))
     val file = java.nio.file.Path.of("build/reports/openapi.json")
