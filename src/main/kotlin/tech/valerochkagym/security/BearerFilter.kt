@@ -28,9 +28,26 @@ class BearerFilter(
     response: HttpServletResponse,
     chain: FilterChain,
   ) {
+    // The stream checks session validity on every send. A final async dispatch must
+    // retain its initial principal and never append a JSON authentication error to SSE.
+    if (
+      request.dispatcherType == jakarta.servlet.DispatcherType.ASYNC &&
+        request.requestURI == "/v1/ai/coach-turn/stream"
+    ) {
+      val identity = request.getAttribute("coach.stream.identity")
+      if (identity != null)
+        SecurityContextHolder.getContext().authentication =
+          UsernamePasswordAuthenticationToken(identity, null, emptyList())
+      try {
+        chain.doFilter(request, response)
+      } finally {
+        SecurityContextHolder.clearContext()
+      }
+      return
+    }
     try {
       val maxRequestBytes =
-        if (request.requestURI == "/v1/ai/coach-turn")
+        if (request.requestURI in setOf("/v1/ai/coach-turn", "/v1/ai/coach-turn/stream"))
           tech.valerochkagym.service.ai.CoachTurnService.MAX_REQUEST_BYTES
         else 10 * 1024 * 1024
       if (request.contentLengthLong > maxRequestBytes)
@@ -42,6 +59,8 @@ class BearerFilter(
         val identity = auth.authenticate(header.removePrefix("Bearer ")) ?: unauthorized()
         SecurityContextHolder.getContext().authentication =
           UsernamePasswordAuthenticationToken(identity, null, emptyList())
+        if (request.requestURI == "/v1/ai/coach-turn/stream")
+          request.setAttribute("coach.stream.identity", identity)
         limits.check("user:${identity.userId}", 300)
       }
       if (

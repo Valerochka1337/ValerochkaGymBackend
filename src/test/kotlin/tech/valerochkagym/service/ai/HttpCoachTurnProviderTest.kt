@@ -78,6 +78,109 @@ class HttpCoachTurnProviderTest {
     e.responseBody.write(bytes)
   }
 
+  private fun chunk(delta: String, reason: String = "null") =
+    "data: {\"choices\":[{\"index\":0,\"delta\":$delta,\"finish_reason\":$reason}]}\r\n\r\n"
+
+  @Test
+  fun `stream delivers UTF8 text before upstream finishes and hides metadata`() {
+    val release = CountDownLatch(1)
+    val first = CountDownLatch(1)
+    handler = { e ->
+      e.sendResponseHeaders(200, 0)
+      val initial = chunk("""{"role":"assistant","content":"Привет 🏋️","reasoning":"PRIVATE"}""")
+      initial.toByteArray().forEach {
+        e.responseBody.write(byteArrayOf(it))
+        e.responseBody.flush()
+      }
+      release.await(3, TimeUnit.SECONDS)
+      e.responseBody.write((chunk("{}", "\"stop\"") + "data: [DONE]\n\n").toByteArray())
+    }
+    val deltas = StringBuffer()
+    val result =
+      executor.submit<JsonNode> {
+        provider(5000).stream(input()) {
+          deltas.append(it)
+          first.countDown()
+        }
+      }
+    try {
+      assertTrue(first.await(2, TimeUnit.SECONDS))
+      assertFalse(result.isDone)
+      assertTrue(captured.get()["stream"].asBoolean())
+      assertEquals("Привет 🏋️", deltas.toString())
+    } finally {
+      release.countDown()
+    }
+    assertFalse(result.get(2, TimeUnit.SECONDS).toString().contains("PRIVATE"))
+  }
+
+  @Test
+  fun `stream reconstructs indexed tools and fragmented arguments`() {
+    val start =
+      chunk(
+        """{"tool_calls":[{"index":1,"id":"b","type":"function","function":{"name":"find_exercises","arguments":"{"}},{"index":0,"id":"a","type":"function","function":{"name":"get_workout_state","arguments":"{"}}]}"""
+      )
+    val finish =
+      chunk(
+        """{"tool_calls":[{"index":0,"function":{"arguments":"}"}},{"index":1,"function":{"arguments":"}"}}]}""",
+        "\"tool_calls\"",
+      )
+    handler = { respond(it, start + finish + "data: [DONE]\n\n") }
+    val result = provider().stream(input()) { fail("tools must never be deltas") }
+    val calls = result["choices"][0]["message"]["tool_calls"]
+    assertEquals(2, calls.size())
+    assertEquals("a", calls[0]["id"].asString())
+    assertEquals("{}", calls[1]["function"]["arguments"].asString())
+    handler = {
+      respond(it, (start + finish + "data: [DONE]\n\n").replace("find_exercises", "run_sql"))
+    }
+    assertEquals(
+      "ai_invalid_response",
+      assertThrows(ApiException::class.java) { provider().stream(input()) {} }.code,
+    )
+  }
+
+  @Test
+  fun `stream rejects malformed truncated refused and oversized events`() {
+    val initial = chunk("""{"content":"partial"}""")
+    for (body in
+      listOf(
+        initial,
+        initial + chunk("{}", "\"stop\""),
+        initial + "data: [DONE]\n\n",
+        "data: invalid JSON\n\n",
+        initial + chunk("{}", "\"length\"") + "data: [DONE]\n\n",
+        chunk("""{"refusal":"No"}"""),
+        "data: " + "x".repeat(240 * 1024),
+        ":" + "x".repeat(200 * 1024) + "\n\n" + (": " + "x".repeat(200 * 1024) + "\n\n").repeat(10),
+      )) {
+      handler = { respond(it, body) }
+      assertEquals(
+        "ai_invalid_response",
+        assertThrows(ApiException::class.java) { provider().stream(input()) {} }.code,
+      )
+    }
+  }
+
+  @Test
+  fun `stream deadline includes stalled body after headers`() {
+    val release = CountDownLatch(1)
+    handler = { e ->
+      e.sendResponseHeaders(200, 0)
+      e.responseBody.write(chunk("""{"content":"partial"}""").toByteArray())
+      e.responseBody.flush()
+      release.await(3, TimeUnit.SECONDS)
+    }
+    try {
+      assertEquals(
+        "ai_timeout",
+        assertThrows(ApiException::class.java) { provider(200).stream(input()) {} }.code,
+      )
+    } finally {
+      release.countDown()
+    }
+  }
+
   @Test
   fun `wire uses coach model tools and no forced JSON format or private trace`() {
     handler = {
@@ -88,6 +191,7 @@ class HttpCoachTurnProviderTest {
     assertEquals("coach", captured.get()["model"].asString())
     assertFalse(captured.get().has("response_format"))
     assertFalse(captured.get()["store"].asBoolean())
+    assertFalse(captured.get()["stream"].asBoolean())
     assertTrue(captured.get().has("tools"))
     assertEquals(
       "get_workout_state",

@@ -328,7 +328,7 @@ Keep pepper material in deployment secret configuration, never in source control
 
 ## Live Coach
 
-Authenticated `GET /v1/ai/coach-models` and `POST /v1/ai/coach-turn` provide a bounded stateless tool-calling exchange. Request/response contract, limits and model settings: [Live Coach contract](../vibe/live-coach-plan.md). Workout operations execute only in the Android application after local validation and confirmation. These routes do not require a synced active workout or read health/profile records.
+Authenticated `GET /v1/ai/coach-models`, `POST /v1/ai/coach-turn` and `POST /v1/ai/coach-turn/stream` provide a bounded stateless tool-calling exchange. Request/response contract, limits and model settings: [Live Coach contract](../vibe/live-coach-plan.md). Workout operations execute only in the Android application after local validation and confirmation. These routes do not require a synced active workout or read health/profile records.
 
 ### Background calendar preparation
 

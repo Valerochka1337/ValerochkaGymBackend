@@ -29,3 +29,60 @@ UUID связывает ответ с обращением, не запуска�
 ## Реализация
 
 T001: bounded stateless provider and server model catalogue; T002: authenticated async controller with cancellation; T003: Android integration and v3 journal; T004: provider/unit/HTTP tests and independent review. No deployment or push is part of this change.
+
+## Потоковый API
+
+`POST /v1/ai/coach-turn/stream` принимает то же JSON-тело и `Authorization: Bearer …`.
+Существующие `/coach-turn` (`stream:false`) и `/coach-models` сохраняют формат и поведение.
+Новый маршрут возвращает `Content-Type: text/event-stream`, `Cache-Control: no-store`,
+`X-Accel-Buffering: no`; Nginx отключает буферизацию этого маршрута.
+
+```text
+event:text_delta
+data:{"requestId":"123e4567-e89b-12d3-a456-426614174000","model":"coach","delta":"Продолжим"}
+
+event:completed
+data:{"requestId":"123e4567-e89b-12d3-a456-426614174000","model":"coach","completion":{"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"Продолжим"}}]}}
+
+```
+
+Вместо `completed` при ошибке:
+
+```text
+event:error
+data:{"requestId":"123e4567-e89b-12d3-a456-426614174000","code":"ai_timeout","message":"AI не ответил вовремя. Попробуйте ещё раз"}
+
+```
+
+`text_delta` — предварительный текст. Инструменты передаются только в полном проверенном
+`completed`. При доступном соединении сервер отправляет ровно одно завершающее событие
+(`completed` или `error`) и закрывает поток. EOF без `completed` означает незавершённый
+ответ: клиент не выполняет инструменты. Повторов, resume и `Last-Event-ID` нет.
+Комментарии `:heartbeat` отправляются каждые 10 секунд; клиент игнорирует их как данные.
+Проверка актуальности сессии выполняется перед каждым событием и heartbeat. Отзыв сессии
+прерывает upstream и возвращает `error` с кодом `unauthorized`.
+
+Ошибки до открытия потока возвращаются обычным HTTP/JSON: 400 (валидация), 401
+(авторизация), 413 (вход больше 512 KiB), 429 (`rate_limited`), 503
+(`ai_busy` или `ai_unavailable`). После открытия ошибки передаются событием `error`:
+`ai_invalid_response`, `ai_unavailable`, `ai_timeout`, `unauthorized`.
+
+Оба маршрута используют общий лимит двух обменов и 30 запросов в минуту на пользователя.
+Общий deadline — 45 секунд, включая чтение upstream. Отключение клиента обнаруживается
+при записи/heartbeat; timeout, ошибка и отключение отменяют upstream и освобождают слот.
+Очередь передачи ограничена одним событием; медленный клиент приостанавливает чтение
+провайдера. Поток upstream ограничен 2 MiB, отдельная SSE-запись — 240 KiB; ограничения
+итогового текста и инструментов прежние. UTF-8 и SSE разбираются независимо от сетевых
+пакетов. Успех требует `finish_reason: stop|tool_calls` и `[DONE]`. `length`, refusal,
+некорректные инструменты, повреждённый JSON и преждевременный EOF отклоняются. Reasoning,
+usage и метаданные провайдера не попадают в публичный поток.
+
+Пример ручной проверки (тело прежнего coach-turn сохранено в `request.json`):
+
+```sh
+curl --no-buffer -X POST "$BASE_URL/v1/ai/coach-turn/stream" \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  --data-binary @request.json
+```
+
+Android, схема БД и развёртывание в эту реализацию streaming не входят.

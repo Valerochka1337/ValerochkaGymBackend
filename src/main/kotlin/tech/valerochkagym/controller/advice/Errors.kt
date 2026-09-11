@@ -18,22 +18,35 @@ fun unauthorized(): Nothing = throw ApiException(401, "unauthorized", "Войд�
 @RestControllerAdvice
 class Errors {
   @ExceptionHandler(ApiException::class)
-  fun api(e: ApiException) = ResponseEntity.status(e.status).body(ApiError(e.code, e.message))
+  fun api(e: ApiException, request: jakarta.servlet.http.HttpServletRequest) =
+    ResponseEntity.status(e.status)
+      .headers {
+        if (request.requestURI == "/v1/ai/coach-turn/stream")
+          it.contentType = org.springframework.http.MediaType.APPLICATION_JSON
+      }
+      .body(ApiError(e.code, e.message))
 
   @ExceptionHandler(
     MethodArgumentNotValidException::class,
     HttpMessageNotReadableException::class,
     IllegalArgumentException::class,
   )
-  fun invalid(e: Exception): ResponseEntity<ApiError> {
+  fun invalid(
+    e: Exception,
+    request: jakarta.servlet.http.HttpServletRequest,
+  ): ResponseEntity<ApiError> {
     // A bounded request stream may be wrapped by Jackson's conversion exception.
     generateSequence<Throwable>(e) { it.cause }
       .filterIsInstance<ApiException>()
       .firstOrNull()
       ?.let {
-        return api(it)
+        return api(it, request)
       }
     return ResponseEntity.badRequest()
+      .headers {
+        if (request.requestURI == "/v1/ai/coach-turn/stream")
+          it.contentType = org.springframework.http.MediaType.APPLICATION_JSON
+      }
       .body(ApiError("invalid_request", "Проверьте формат и значения полей"))
   }
 }

@@ -112,5 +112,9 @@ class CoachAiConfiguration {
       override fun complete(input: CoachTurnInput) =
         settings.current()?.let { HttpCoachTurnProvider(it, json, client).complete(input) }
           ?: throw aiError("ai_unavailable")
+
+      override fun stream(input: CoachTurnInput, delta: (String) -> Unit) =
+        settings.current()?.let { HttpCoachTurnProvider(it, json, client).stream(input, delta) }
+          ?: throw aiError("ai_unavailable")
     }
 }
