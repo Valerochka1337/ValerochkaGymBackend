@@ -329,3 +329,37 @@ Keep pepper material in deployment secret configuration, never in source control
 ## Live Coach
 
 Authenticated `GET /v1/ai/coach-models` and `POST /v1/ai/coach-turn` provide a bounded stateless tool-calling exchange. Request/response contract, limits and model settings: [Live Coach contract](../vibe/live-coach-plan.md). Workout operations execute only in the Android application after local validation and confirmation. These routes do not require a synced active workout or read health/profile records.
+
+### Background calendar preparation
+
+`POST /v1/ai/calendar-draft-jobs` accepts the existing complete `CalendarDraftRequest`
+plus optional `replacesRequestId: UUID?` and `replacesRequestIds: UUID[]` (at most 1000).
+The response is HTTP 202 `{requestId,state,errorCode,result}`. `result`, when present,
+is the existing typed `CalendarDraftResponse`; no program or calendar event is created.
+The exact same request bytes and UUID must be retried after a lost acknowledgement;
+changing bytes for a known UUID returns `ai_request_conflict`. A new intentional
+calculation uses a new UUID and includes all locally superseded/in-flight ancestors.
+Do not truncate that lineage silently. Tombstones prevent reordered delivery from
+restoring older work, including cancellation before its POST arrives.
+
+`GET /v1/ai/calendar-draft-jobs/{requestId}` returns the same response envelope.
+States are `QUEUED`, `RUNNING`, `READY`, `FAILED`, `SUPERSEDED`, `STALE`, `EXPIRED`.
+Only `READY` is current and eligible for the existing explicit proposal approval.
+A prior typed result remains available on stale/superseded jobs for viewing; approval
+rejects it as `proposal_stale`. Status checks revalidate owner/catalog revision and date.
+`DELETE /v1/ai/calendar-draft-jobs/{requestId}` returns 204 and durably supersedes the
+job (or tombstones a not-yet-delivered UUID). An offline client must retain an explicit
+cancellation for delivery and immediately prevent local application. Calendar preparation
+uses the existing training context, including legacy sync measurement weight; it does
+not read the separate health ledger and is not tied to its health-only disclosure toggle.
+
+All operations require a live authenticated owner session. Work binds the accepting
+session, so revoked/expired sessions fail safely; no access token is stored. The queue
+stores validated user intent, lease metadata, and typed validated results only, never
+provider prompts, captured context or raw outputs. One execution runs per backend
+instance. The scheduler checks every 5 seconds (`gym.calendar-jobs.poll-ms`), recovers
+expired 90-second leases after restart and allows at most three executions per job.
+A lease fence and proposal/result transaction prohibit late publication and duplicate
+proposals. The original synchronous calendar endpoint remains available for old clients.
+Clients should use bounded polling/WorkManager backoff; accepting a job does not promise
+immediate execution. Past requested dates become `EXPIRED`, never silently rescheduled.

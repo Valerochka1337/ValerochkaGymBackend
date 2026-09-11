@@ -43,7 +43,12 @@ class CalendarAiService(
     javaClass.getResourceAsStream("/ai/calendar-output-schema.json")!!.use(json::readTree)
   }
 
-  fun create(identity: Identity, raw: ByteArray): CalendarDraftResponse {
+  fun create(
+    identity: Identity,
+    raw: ByteArray,
+    publicationGuard: () -> Unit = {},
+    publish: (CalendarDraftResponse) -> Unit = {},
+  ): CalendarDraftResponse {
     val request = parse(raw)
     val digest = raw.sha256()
     val attempt = reserve(identity, request, digest)
@@ -151,6 +156,7 @@ class CalendarAiService(
             }
             return@execute CalendarFinal(error = terminalError(current))
           }
+          publicationGuard()
           current.state = CalendarAiAttemptState.COMMITTING
           hooks.beforeProposalInsert()
           val proposal =
@@ -176,6 +182,7 @@ class CalendarAiService(
           current.state = CalendarAiAttemptState.SUCCEEDED
           current.terminalStatus = null
           current.terminalCode = null
+          publish(response)
           CalendarFinal(response = response)
         }
       final.error?.let { throw it }
@@ -302,7 +309,7 @@ class CalendarAiService(
   private fun terminalError(row: CalendarAiAttemptEntity): ApiException =
     aiError(row.terminalCode ?: "ai_interrupted")
 
-  private fun parse(raw: ByteArray): CalendarDraftRequest {
+  internal fun parse(raw: ByteArray, validateFuture: Boolean = true): CalendarDraftRequest {
     if (
       raw.isEmpty() ||
         raw.size > 524_288 ||
@@ -413,7 +420,7 @@ class CalendarAiService(
         request.preferences?.let { it.length > 2000 || it.trim().isEmpty() } == true
     )
       bad("Некорректный запрос")
-    if (!Instant.ofEpochMilli(request.startsAtMillis).isAfter(Instant.now(clock)))
+    if (validateFuture && !Instant.ofEpochMilli(request.startsAtMillis).isAfter(Instant.now(clock)))
       bad("Некорректный запрос")
     return request
   }
