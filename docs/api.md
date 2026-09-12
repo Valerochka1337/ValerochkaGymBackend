@@ -363,3 +363,11 @@ A lease fence and proposal/result transaction prohibit late publication and dupl
 proposals. The original synchronous calendar endpoint remains available for old clients.
 Clients should use bounded polling/WorkManager backoff; accepting a job does not promise
 immediate execution. Past requested dates become `EXPIRED`, never silently rescheduled.
+
+## Промпт Live Coach
+
+`GET /v1/ai/coach-prompt` (Bearer) возвращает `{ "prompt": "..." }`.
+Текст хранится в `ai_settings.coach_prompt`; сервер кэширует его на 5 минут на каждом экземпляре.
+Редактирование: `coachPrompt` в существующем `PUT /admin/api/ai-settings` с проверкой `revision`.
+Пустой текст, NUL и более 16000 символов отклоняются; переносы строк сохраняются.
+Сначала развернуть сервер с миграцией, затем Android. Старые клиенты продолжают использовать встроенный текст.

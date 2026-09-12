@@ -624,6 +624,10 @@ class AiIntegrationTest {
             )
           },
       )
+    assertEquals(401, call("/v1/ai/coach-prompt").statusCode())
+    val prompt = call("/v1/ai/coach-prompt", a)
+    assertEquals(200, prompt.statusCode())
+    assertTrue(json.readTree(prompt.body())["prompt"].asString().contains("Live Coach"))
     assertEquals(401, call("/v1/ai/coach-models").statusCode())
     assertEquals(401, call("/v1/ai/coach-turn", body = request).statusCode())
     val catalog = call("/v1/ai/coach-models", a)

@@ -1938,6 +1938,27 @@
           }
         ]
       }
+    },
+    "/v1/ai/coach-prompt": {
+      "get": {
+        "tags": [
+          "live-coach-controller"
+        ],
+        "operationId": "prompt",
+        "description": "Authenticated Live Coach system prompt, cached server-side for five minutes.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CoachPromptResponse"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -2617,6 +2638,19 @@
             "items": {
               "type": "string"
             }
+          }
+        }
+      },
+      "CoachPromptResponse": {
+        "type": "object",
+        "required": [
+          "prompt"
+        ],
+        "properties": {
+          "prompt": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 16000
           }
         }
       }
