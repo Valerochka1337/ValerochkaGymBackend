@@ -56,6 +56,7 @@ class BackendIntegrationTest {
         "visionModel" to "vision",
         "coachModel" to "coach",
         "coachModels" to listOf("coach", "other"),
+        "coachPrompt" to "  Новый промпт\nВторая строка  ",
       )
     assertEquals(403, adminCall("PUT", path, body, browser, csrf = null).status)
     assertEquals(403, adminCall("PUT", path, body, browser, origin = "https://evil.test").status)
@@ -68,6 +69,15 @@ class BackendIntegrationTest {
     assertFalse(saved.response.body().contains("test-secret-api-key"))
     assertFalse(saved.response.body().contains("encrypted_api_key"))
     assertTrue(saved.body!!["hasApiKey"].asBoolean())
+    assertEquals("  Новый промпт\nВторая строка  ", saved.body!!["coachPrompt"].asText())
+    assertEquals(
+      "  Новый промпт\nВторая строка  ",
+      db.queryForObject("SELECT coach_prompt FROM ai_settings", String::class.java),
+    )
+    assertEquals(
+      400,
+      adminCall("PUT", path, body + mapOf("revision" to 1, "coachPrompt" to "  "), browser).status,
+    )
     val encrypted =
       db.queryForObject("SELECT encrypted_api_key FROM ai_settings", String::class.java)!!
     assertTrue(encrypted.startsWith("v1:"))
@@ -619,7 +629,7 @@ class BackendIntegrationTest {
         ),
       )
       assertEquals(
-        "17",
+        "18",
         command(
           "psql",
           "-U",
@@ -2397,7 +2407,7 @@ class BackendIntegrationTest {
 
   @Test
   fun `Liquibase has applied auth sync and admin changesets`() {
-    assertEquals(17, db.queryForObject("SELECT count(*) FROM databasechangelog", Int::class.java))
+    assertEquals(18, db.queryForObject("SELECT count(*) FROM databasechangelog", Int::class.java))
   }
 
   @Test
