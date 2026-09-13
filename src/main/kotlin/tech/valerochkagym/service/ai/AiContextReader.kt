@@ -174,19 +174,35 @@ class AiContextReader(
           .values
           .toList()
       if (candidates.size > 1000) throw aiError("ai_context_too_large")
-      val gyms =
+      // Resolve requested gyms using the same personal-over-standard precedence as exercises
+      // and proposal approval. Built-in gyms are not copied into the owner's records.
+      fun gymRows(sql: String, vararg args: Any): List<CalendarCandidateSource> =
+        jdbc.query(
+          sql,
+          { rs, _ ->
+            val id = rs.getObject(1, java.util.UUID::class.java)
+            account("gym", id, rs.getInt(3))
+            CalendarCandidateSource(id.toString(), json.readTree(rs.getString(2)))
+          },
+          *args,
+        )
+      val personalGyms =
         if (requestedGymIds.isEmpty()) emptyList()
         else
-          jdbc.query(
+          gymRows(
             "SELECT id,payload::text,octet_length(payload::text) FROM records WHERE user_id=? AND kind='gym' AND NOT deleted AND id IN (${requestedGymIds.joinToString(",") { "?" }}) ORDER BY id LIMIT 1001",
-            { rs, _ ->
-              val id = rs.getObject(1, java.util.UUID::class.java)
-              val bytes = rs.getInt(3)
-              account("gym", id, bytes)
-              CalendarCandidateSource(id.toString(), json.readTree(rs.getString(2)))
-            },
             *(arrayOf(identity.userId) + requestedGymIds.map(java.util.UUID::fromString)),
           )
+      val personalGymIds = personalGyms.mapTo(mutableSetOf()) { it.id }
+      val missingGymIds = requestedGymIds.filterNot { it in personalGymIds }
+      val standardGyms =
+        if (!common.active || missingGymIds.isEmpty()) emptyList()
+        else
+          gymRows(
+            "SELECT id,payload::text,octet_length(payload::text) FROM standard_records WHERE kind='gym' AND NOT archived AND id IN (${missingGymIds.joinToString(",") { "?" }}) ORDER BY id LIMIT 1001",
+            *missingGymIds.map(java.util.UUID::fromString).toTypedArray(),
+          )
+      val gyms = (personalGyms + standardGyms).sortedBy { it.id }
       if (requestedGymIds.isNotEmpty() && gyms.map { it.id }.toSet() != requestedGymIds.toSet())
         throw aiError("ai_context_stale")
       val profileRows =
