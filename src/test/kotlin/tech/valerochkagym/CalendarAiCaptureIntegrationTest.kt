@@ -278,6 +278,96 @@ class CalendarAiCaptureIntegrationTest {
   }
 
   @Test
+  fun `built in gym is captured and background job publishes its proposal`() {
+    val owner = owner()
+    val exercise = exercise(owner, equipment = listOf("rack"), known = true)
+    val gym = UUID.randomUUID()
+    db.update("UPDATE catalog_state SET active=true")
+    db.update(
+      "INSERT INTO standard_records(kind,id,revision,archived,payload) VALUES ('gym',?,9,false,?::jsonb)",
+      gym,
+      json.writeValueAsString(
+        mapOf(
+          "name" to "Built in gym",
+          "updatedAt" to capturedAt,
+          "exerciseIds" to emptyList<String>(),
+          "inventoryConfigured" to true,
+          "equipmentIds" to listOf("rack"),
+        )
+      ),
+    )
+    val context = providerContext(owner, gymIds = listOf(gym.toString()))
+    assertEquals(
+      listOf(exercise.toString()),
+      context["candidates"].toList().map { it["exerciseId"].asString() },
+    )
+    provider.handler = { providerResponse(exercise) }
+    val accepted = jobs.submit(owner, rawRequest(gymIds = listOf(gym.toString())))
+    jobs.runNext()
+    val result = jobs.status(owner, UUID.fromString(accepted.requestId))
+    assertEquals("READY", result.state, result.errorCode)
+    assertEquals(listOf(gym.toString()), result.result!!.proposal.snapshot.draft.gymIds)
+  }
+
+  @Test
+  fun `personal gym overrides built in gym with the same identity`() {
+    val owner = owner()
+    val personalExercise = exercise(owner, equipment = listOf("rack"), known = true)
+    exercise(owner, equipment = listOf("bench"), known = true)
+    val gym = UUID.randomUUID()
+    db.update("UPDATE catalog_state SET active=true")
+    db.update(
+      "INSERT INTO standard_records(kind,id,revision,archived,payload) VALUES ('gym',?,9,false,?::jsonb)",
+      gym,
+      json.writeValueAsString(
+        mapOf("inventoryConfigured" to true, "equipmentIds" to listOf("bench"))
+      ),
+    )
+    record(
+      owner,
+      "gym",
+      gym,
+      mapOf("inventoryConfigured" to true, "equipmentIds" to listOf("rack")),
+    )
+    val context = providerContext(owner, gymIds = listOf(gym.toString()))
+    assertEquals(
+      listOf(personalExercise.toString()),
+      context["candidates"].toList().map { it["exerciseId"].asString() },
+    )
+  }
+
+  @Test
+  fun `archived and disabled catalog gyms remain unavailable`() {
+    val owner = owner()
+    exercise(owner)
+    val gym = UUID.randomUUID()
+    db.update("UPDATE catalog_state SET active=true")
+    db.update(
+      "INSERT INTO standard_records(kind,id,revision,archived,payload) VALUES ('gym',?,9,true,?::jsonb)",
+      gym,
+      json.writeValueAsString(
+        mapOf("inventoryConfigured" to true, "equipmentIds" to emptyList<String>())
+      ),
+    )
+    assertEquals(
+      "ai_context_stale",
+      assertThrows<ApiException> {
+          actions.calendar(owner, rawRequest(gymIds = listOf(gym.toString())))
+        }
+        .code,
+    )
+    db.update("UPDATE standard_records SET archived=false WHERE kind='gym' AND id=?", gym)
+    db.update("UPDATE catalog_state SET active=false")
+    assertEquals(
+      "ai_context_stale",
+      assertThrows<ApiException> {
+          actions.calendar(owner, rawRequest(gymIds = listOf(gym.toString())))
+        }
+        .code,
+    )
+  }
+
+  @Test
   fun `selected gym intersection and exclusions leave only known covered candidates`() {
     val owner = owner()
     val plain = exercise(owner, equipment = emptyList(), known = true)
